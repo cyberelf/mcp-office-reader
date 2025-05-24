@@ -1,0 +1,31 @@
+---
+description: 
+globs: *.rs
+alwaysApply: false
+---
+# Crate References Guide
+
+This workspace maintains a dedicated folder for documenting unfamiliar Rust crates at [docs/references/index.md](mdc:docs/references/index.md).
+
+## Available Crate References
+
+The following crates have detailed documentation:
+
+- [RMCP (Rust Model Context Protocol)](mdc:docs/references/rmcp.md) - Clean Rust implementation of the Model Context Protocol
+
+## Adding New Crates
+
+When encountering an unfamiliar crate:
+
+1. Create a new markdown file in the `docs/references/` folder using the crate name
+2. Update the index at [docs/references/index.md](mdc:docs/references/index.md)
+3. Follow the structured format used in existing reference documents
+
+## Fixing Documentation
+
+When noticing inaccuracies or needing to update information:
+
+1. Open the specific reference document
+2. Update the information
+3. Note the changes in a comment at the end of the file in a "Revision History" section
+
