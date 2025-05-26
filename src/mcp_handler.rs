@@ -19,9 +19,9 @@ impl OfficeReader {
     }
 }
 
-/// Input for the process_office_document tool
+/// Input for the read_office_document tool
 #[derive(Serialize, Deserialize, Debug, schemars::JsonSchema)]
-pub struct ProcessOfficeDocumentInput {
+pub struct ReadOfficeDocumentInput {
     #[schemars(description = "Path to the office document file")]
     pub file_path: String,
 }
@@ -39,9 +39,9 @@ impl IntoContents for DocumentContent {
 
 #[tool(tool_box)]
 impl OfficeReader {
-    /// Process an office document and return its content as markdown
+    /// Read an office document and return its content as markdown
     #[tool(description = "Read an office document (Excel, PDF, DOCX) and return its content as markdown")]
-    pub async fn process_office_document(
+    pub async fn read_office_document(
         &self,
         #[tool(param)]
         #[schemars(description = "Path to the office document file")]

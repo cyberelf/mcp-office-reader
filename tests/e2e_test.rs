@@ -32,9 +32,9 @@ async fn test_process_text_document() {
     println!("Tools: {:?}", tools);
     assert!(tools.tools.len() > 0);
 
-    // Call the process_office_document tool
+    // Call the read_office_document tool
     let result = service.call_tool(CallToolRequestParam {
-        name: "process_office_document".into(),
+        name: "read_office_document".into(),
         arguments: serde_json::json!({
             "file_path": file_path
         }).as_object().cloned(),
@@ -73,9 +73,9 @@ async fn test_process_excel_document() {
     println!("Tools: {:?}", tools);
     assert!(tools.tools.len() > 0);
 
-    // Call the process_office_document tool
+    // Call the read_office_document tool
     let result = service.call_tool(CallToolRequestParam {
-        name: "process_office_document".into(),
+        name: "read_office_document".into(),
         arguments: serde_json::json!({
             "file_path": file_path
         }).as_object().cloned(),
