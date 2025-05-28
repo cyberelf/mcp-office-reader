@@ -3,7 +3,7 @@ use std::path::Path;
 use tempfile::NamedTempFile;
 use tokio::process::Command;
 use tokio::time::Duration;
-use rmcp::{model::{CallToolRequestParam, CallToolResult}, service::ServiceExt, transport::TokioChildProcess};
+use rmcp::{model::CallToolRequestParam, service::ServiceExt, transport::TokioChildProcess};
 
 #[tokio::test]
 async fn test_process_text_document() {

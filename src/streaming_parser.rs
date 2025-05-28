@@ -16,17 +16,13 @@ pub struct ProcessingProgress {
 /// Configuration for streaming processing
 #[derive(Debug, Clone)]
 pub struct StreamingConfig {
-    pub chunk_size_pages: usize,
     pub max_chunk_size_chars: usize,
-    pub include_progress: bool,
 }
 
 impl Default for StreamingConfig {
     fn default() -> Self {
         Self {
-            chunk_size_pages: 5,  // Process 5 pages at a time
             max_chunk_size_chars: 10000,  // Max 10k characters per chunk
-            include_progress: true,
         }
     }
 }
@@ -278,9 +274,7 @@ mod tests {
     #[test]
     fn test_streaming_config_default() {
         let config = StreamingConfig::default();
-        assert_eq!(config.chunk_size_pages, 5);
         assert_eq!(config.max_chunk_size_chars, 10000);
-        assert_eq!(config.include_progress, true);
     }
 
     #[test]
@@ -402,9 +396,7 @@ mod tests {
         let config1 = StreamingConfig::default();
         let config2 = config1.clone();
         
-        assert_eq!(config1.chunk_size_pages, config2.chunk_size_pages);
         assert_eq!(config1.max_chunk_size_chars, config2.max_chunk_size_chars);
-        assert_eq!(config1.include_progress, config2.include_progress);
     }
 
     #[test]
@@ -413,9 +405,7 @@ mod tests {
         let debug_str = format!("{:?}", config);
         
         assert!(debug_str.contains("StreamingConfig"));
-        assert!(debug_str.contains("chunk_size_pages"));
         assert!(debug_str.contains("max_chunk_size_chars"));
-        assert!(debug_str.contains("include_progress"));
     }
 
     #[tokio::test]

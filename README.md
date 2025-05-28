@@ -1,11 +1,13 @@
 # Office Reader MCP
 
-A Model Context Protocol (MCP) server for reading and converting office documents (Excel, PDF, DOCX) to markdown format with **streaming support** for large files.
+A Model Context Protocol (MCP) server for reading and converting office documents (Excel, PDF, DOCX) to markdown format with **streaming support** and **pagination** for large files.
 
 ## Features
 
 - 📄 **Document Support**: Excel (.xlsx, .xls), PDF (.pdf), and DOCX (.docx) files
 - 🚀 **Streaming Mode**: Process large documents in chunks with progress reporting
+- 📏 **Text Length Check**: Get document size without reading full content
+- 📖 **Pagination Support**: Read documents in chunks with offset and size limits
 - 📊 **Progress Tracking**: Real-time progress updates for long-running operations
 - 🔄 **Non-blocking**: Asynchronous processing that doesn't freeze the MCP server
 - 🛡️ **Error Handling**: Graceful error handling with detailed error messages
@@ -15,17 +17,60 @@ A Model Context Protocol (MCP) server for reading and converting office document
 
 ## Tools Available
 
-### 1. `read_office_document`
-**Best for**: Small to medium-sized documents
-- Processes the entire document at once
-- Returns complete markdown content
-- Faster for smaller files
+### 1. `get_document_text_length` ⭐ **NEW**
+**Best for**: Checking document size before processing
+- Returns total text length without processing the full document
+- Fast operation for size estimation
+- Helps decide whether to use pagination or streaming
 
 **Parameters**:
 - `file_path` (string): Path to the office document file
 
-### 2. `stream_office_document` ⭐ **NEW**
-**Best for**: Large documents (like textbooks, reports)
+**Response**:
+```json
+{
+  "file_path": "/path/to/document.pdf",
+  "total_length": 125000,
+  "file_exists": true,
+  "error": null
+}
+```
+
+### 2. `read_office_document` ⭐ **ENHANCED**
+**Best for**: Reading documents with size control and pagination
+- Supports offset and size limits for large documents
+- Default maximum size: 50,000 characters (prevents timeouts)
+- Pagination support for reading large documents in chunks
+- Returns metadata about total size and remaining content
+
+**Parameters**:
+- `file_path` (string): Path to the office document file
+- `max_size` (optional number): Maximum characters to return (default: 50,000)
+- `offset` (optional number): Character offset to start reading from (default: 0)
+
+**Response**:
+```json
+{
+  "file_path": "/path/to/document.pdf",
+  "total_length": 125000,
+  "offset": 0,
+  "returned_length": 50000,
+  "has_more": true,
+  "content": "# Document Title\n\nContent here..."
+}
+```
+
+### 3. `read_office_document_legacy`
+**Best for**: Backward compatibility
+- Processes the entire document at once (no size limits)
+- Returns complete markdown content
+- Use only for small documents or when you need full content
+
+**Parameters**:
+- `file_path` (string): Path to the office document file
+
+### 4. `stream_office_document`
+**Best for**: Large documents with real-time progress
 - Processes documents in configurable chunks
 - Returns progress information with each chunk
 - Prevents timeouts on large files
@@ -53,6 +98,42 @@ cargo run
 
 ### Example Usage
 
+#### Recommended Workflow for Large Documents
+
+1. **Check document size first**:
+```json
+{
+  "name": "get_document_text_length",
+  "arguments": {
+    "file_path": "/path/to/large-document.pdf"
+  }
+}
+```
+
+2. **Read in chunks if large** (>50,000 characters):
+```json
+{
+  "name": "read_office_document",
+  "arguments": {
+    "file_path": "/path/to/large-document.pdf",
+    "max_size": 25000,
+    "offset": 0
+  }
+}
+```
+
+3. **Continue reading with offset**:
+```json
+{
+  "name": "read_office_document",
+  "arguments": {
+    "file_path": "/path/to/large-document.pdf",
+    "max_size": 25000,
+    "offset": 25000
+  }
+}
+```
+
 #### Processing a Large PDF with Streaming
 
 ```json
@@ -62,17 +143,6 @@ cargo run
     "file_path": "/path/to/large-textbook.pdf",
     "chunk_size": 15000
   }
-}
-```
-
-**Response Format**:
-```json
-{
-  "current_page": 15000,
-  "total_pages": 150000,
-  "current_chunk": "# Document Title\n\n## Chunk 1 (characters 0-15000)\n\nContent here...",
-  "is_complete": false,
-  "error": null
 }
 ```
 

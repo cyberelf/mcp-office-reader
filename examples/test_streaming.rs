@@ -55,7 +55,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     println!("\n⚙️  Streaming Configuration:");
     println!("   - Chunk size: {} characters", config.max_chunk_size_chars);
-    println!("   - Pages per chunk: {}", config.chunk_size_pages);
     
     // Determine which streaming function to use based on file extension
     let stream_result = match file_extension.to_lowercase().as_str() {
