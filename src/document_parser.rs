@@ -30,7 +30,7 @@ pub fn read_excel_to_markdown(file_path: &str) -> Result<String> {
 }
 
 /// Convert Excel range to markdown table
-fn range_to_markdown_table(range: &calamine::Range<Data>) -> String {
+pub fn range_to_markdown_table(range: &calamine::Range<Data>) -> String {
     let height = range.height();
     if height == 0 {
         return "Empty sheet".to_string();

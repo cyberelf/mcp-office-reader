@@ -3,18 +3,27 @@ name = "office_reader_mcp"
 version = "0.1.0"
 edition = "2024"
 
+[[example]]
+name = "test_streaming"
+path = "examples/test_streaming.rs"
+
 [dependencies]
 rmcp = { version = "0.1.5", features = ["server"] }
 calamine = "0.26.0"  # For Excel files - using older version to avoid yanked zip dependency
 pdf-extract = "0.9.0"  # For PDF files
+lopdf = "0.32.0"  # For better PDF processing with page-by-page support
 docx-rs = "0.4.7"  # For DOCX files
 anyhow = "1.0.75"  # For error handling
 serde = { version = "1.0.188", features = ["derive"] }
 serde_json = "1.0.107"
 tokio = { version = "1.32.0", features = ["full"] }
+futures = "0.3.30"  # For streaming support
+tokio-stream = "0.1.15"  # For async streaming
 
 [dev-dependencies]
 serde_json = "1.0.107"
 tempfile = "3.20.0"
 rmcp = { version = "0.1.5", features = ["client", "transport-child-process"] }
 tokio = { version = "1.45.0", features = ["full"] }
+tokio-stream = "0.1.15"  # For streaming tests
+cargo-tarpaulin = "0.32.7"
