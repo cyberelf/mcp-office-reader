@@ -7,11 +7,22 @@ edition = "2024"
 name = "test_streaming"
 path = "examples/test_streaming.rs"
 
+[[example]]
+name = "performance_comparison"
+path = "examples/performance_comparison.rs"
+
+[[example]]
+name = "rust_vs_python_benchmark"
+path = "examples/rust_vs_python_benchmark.rs"
+
 [dependencies]
 rmcp = { version = "0.1.5", features = ["server"] }
-calamine = "0.26.0"  # For Excel files - using older version to avoid yanked zip dependency
-pdf-extract = "0.9.0"  # For PDF files
-lopdf = "0.32.0"  # For better PDF processing with page-by-page support
+calamine = "0.26.1"  # For Excel files - using older version to avoid yanked zip dependency
+pdf-extract = "0.9.0"  # For PDF files - SLOW, kept for fallback
+lopdf = "0.36.0"  # For better PDF processing with page-by-page support
+pdfium-render = { version = "0.8.31", features = ["thread_safe", "image"], optional = true }  # FASTEST - Google's Pdfium
+mupdf = { version = "0.5.0", optional = true }  # VERY FAST - MuPDF bindings
+poppler-rs = { version = "0.24.1", optional = true }  # FAST - Poppler bindings
 docx-rs = "0.4.7"  # For DOCX files
 anyhow = "1.0.75"  # For error handling
 serde = { version = "1.0.188", features = ["derive"] }
@@ -19,6 +30,8 @@ serde_json = "1.0.107"
 tokio = { version = "1.32.0", features = ["full"] }
 futures = "0.3.30"  # For streaming support
 tokio-stream = "0.1.15"  # For async streaming
+lazy_static = "1.4.0"  # For global PDF cache
+log = "0.4.22"  # For logging
 
 [dev-dependencies]
 serde_json = "1.0.107"
@@ -27,3 +40,15 @@ rmcp = { version = "0.1.5", features = ["client", "transport-child-process"] }
 tokio = { version = "1.45.0", features = ["full"] }
 tokio-stream = "0.1.15"  # For streaming tests
 cargo-tarpaulin = "0.32.7"
+
+[features]
+default = ["pdfium"]
+pdfium = ["pdfium-render"]  # Enable pdfium-render backend
+mupdf_backend = ["mupdf"]  # Enable MuPDF backend
+poppler = ["poppler-rs"]  # Enable Poppler backend
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"

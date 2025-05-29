@@ -89,6 +89,24 @@ async fn test_process_excel_document() {
     let content = result.content[0].as_text().unwrap().text.clone().to_lowercase();
     assert!(content.contains("this is a test table"));
 
+    // Also test with explicit page parameter
+    let result_with_pages = service.call_tool(CallToolRequestParam {
+        name: "read_office_document".into(),
+        arguments: serde_json::json!({
+            "file_path": file_path,
+            "pages": "all"
+        }).as_object().cloned(),
+    }).await.unwrap();
+    println!("Result with pages: {:?}", result_with_pages);
+    
+    // Check that the result with pages is also not an error
+    assert!(result_with_pages.is_error.is_some() && !result_with_pages.is_error.unwrap());
+    
+    // Check that the content contains page metadata
+    let content_with_pages = result_with_pages.content[0].as_text().unwrap().text.clone().to_lowercase();
+    assert!(content_with_pages.contains("this is a test table"));
+    assert!(content_with_pages.contains("requested_pages") || content_with_pages.contains("page"));
+
     // Kill the server process
     service.cancel().await.unwrap();
 }
@@ -215,7 +233,7 @@ async fn test_stream_nonexistent_file() {
     assert!(result.is_error.is_some() && !result.is_error.unwrap());
     
     let content = result.content[0].as_text().unwrap().text.clone().to_lowercase();
-    assert!(content.contains("file not found") || content.contains("error"));
+    assert!(content.contains("file not found"));
 
     // Kill the server process
     service.cancel().await.unwrap();
@@ -290,6 +308,374 @@ async fn test_stream_with_default_chunk_size() {
     // Check that the content contains expected information
     let content = result.content[0].as_text().unwrap().text.clone().to_lowercase();
     assert!(content.contains("current_page") || content.contains("chunk"));
+
+    // Kill the server process
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_get_document_page_info() {
+    // Path to the Excel test file
+    let file_path = Path::new("tests").join("test.xlsx");
+    let file_path = file_path.to_str().unwrap().to_string();
+    
+    // Start the MCP server in a separate process
+    let service = ()
+        .serve(TokioChildProcess::new(
+            Command::new("cargo").arg("run"),
+        ).unwrap())
+        .await.unwrap();
+    
+    // Give the server some time to start
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // List tools to verify get_document_page_info exists
+    let tools = service.list_tools(Default::default()).await.unwrap();
+    let page_info_tool = tools.tools.iter().find(|t| t.name == "get_document_page_info");
+    assert!(page_info_tool.is_some(), "get_document_page_info tool should be available");
+
+    // Call the get_document_page_info tool
+    let result = service.call_tool(CallToolRequestParam {
+        name: "get_document_page_info".into(),
+        arguments: serde_json::json!({
+            "file_path": file_path
+        }).as_object().cloned(),
+    }).await.unwrap();
+    println!("Page info result: {:?}", result);
+    
+    // Check that the result is not an error
+    assert!(result.is_error.is_some() && !result.is_error.unwrap());
+    
+    // Check that the content contains page information
+    let content = result.content[0].as_text().unwrap().text.clone().to_lowercase();
+    assert!(content.contains("total pages") || content.contains("page"));
+    assert!(content.contains("file:"));
+
+    // Kill the server process
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_get_document_page_info_nonexistent_file() {
+    // Start the MCP server in a separate process
+    let service = ()
+        .serve(TokioChildProcess::new(
+            Command::new("cargo").arg("run"),
+        ).unwrap())
+        .await.unwrap();
+    
+    // Give the server some time to start
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // Call the get_document_page_info tool with a non-existent file
+    let result = service.call_tool(CallToolRequestParam {
+        name: "get_document_page_info".into(),
+        arguments: serde_json::json!({
+            "file_path": "nonexistent_file.xlsx"
+        }).as_object().cloned(),
+    }).await.unwrap();
+    println!("Nonexistent file page info result: {:?}", result);
+    
+    // The tool call should succeed but return file not found info
+    assert!(result.is_error.is_some() && !result.is_error.unwrap());
+    
+    let content = result.content[0].as_text().unwrap().text.clone().to_lowercase();
+    assert!(content.contains("file not found"));
+
+    // Kill the server process
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_read_document_with_specific_pages() {
+    // Path to the Excel test file
+    let file_path = Path::new("tests").join("test.xlsx");
+    let file_path = file_path.to_str().unwrap().to_string();
+    
+    // Start the MCP server in a separate process
+    let service = ()
+        .serve(TokioChildProcess::new(
+            Command::new("cargo").arg("run"),
+        ).unwrap())
+        .await.unwrap();
+    
+    // Give the server some time to start
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // Call the read_office_document tool with specific page selection
+    let result = service.call_tool(CallToolRequestParam {
+        name: "read_office_document".into(),
+        arguments: serde_json::json!({
+            "file_path": file_path,
+            "pages": "1"
+        }).as_object().cloned(),
+    }).await.unwrap();
+    println!("Specific page result: {:?}", result);
+    
+    // Check that the result is not an error
+    assert!(result.is_error.is_some() && !result.is_error.unwrap());
+    
+    // Check that the content contains page-specific information
+    let content = result.content[0].as_text().unwrap().text.clone().to_lowercase();
+    assert!(content.contains("requested_pages") || content.contains("page"));
+    assert!(content.contains("this is a test table"));
+
+    // Kill the server process
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_read_document_with_page_range() {
+    // Path to the Excel test file
+    let file_path = Path::new("tests").join("test.xlsx");
+    let file_path = file_path.to_str().unwrap().to_string();
+    
+    // Start the MCP server in a separate process
+    let service = ()
+        .serve(TokioChildProcess::new(
+            Command::new("cargo").arg("run"),
+        ).unwrap())
+        .await.unwrap();
+    
+    // Give the server some time to start
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // First get page info to understand available pages
+    let page_info_result = service.call_tool(CallToolRequestParam {
+        name: "get_document_page_info".into(),
+        arguments: serde_json::json!({
+            "file_path": file_path
+        }).as_object().cloned(),
+    }).await.unwrap();
+    println!("Page info for range test: {:?}", page_info_result);
+
+    // Call the read_office_document tool with page range (if multiple pages exist)
+    let result = service.call_tool(CallToolRequestParam {
+        name: "read_office_document".into(),
+        arguments: serde_json::json!({
+            "file_path": file_path,
+            "pages": "1-1"  // Range format, even if only one page
+        }).as_object().cloned(),
+    }).await.unwrap();
+    println!("Page range result: {:?}", result);
+    
+    // Check that the result is not an error
+    assert!(result.is_error.is_some() && !result.is_error.unwrap());
+    
+    // Check that the content contains range information
+    let content = result.content[0].as_text().unwrap().text.clone().to_lowercase();
+    assert!(content.contains("requested_pages") || content.contains("page"));
+
+    // Kill the server process
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_read_document_with_all_pages() {
+    // Path to the Excel test file
+    let file_path = Path::new("tests").join("test.xlsx");
+    let file_path = file_path.to_str().unwrap().to_string();
+    
+    // Start the MCP server in a separate process
+    let service = ()
+        .serve(TokioChildProcess::new(
+            Command::new("cargo").arg("run"),
+        ).unwrap())
+        .await.unwrap();
+    
+    // Give the server some time to start
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // Call the read_office_document tool with "all" pages
+    let result = service.call_tool(CallToolRequestParam {
+        name: "read_office_document".into(),
+        arguments: serde_json::json!({
+            "file_path": file_path,
+            "pages": "all"
+        }).as_object().cloned(),
+    }).await.unwrap();
+    println!("All pages result: {:?}", result);
+    
+    // Check that the result is not an error
+    assert!(result.is_error.is_some() && !result.is_error.unwrap());
+    
+    // Check that the content contains all pages information
+    let content = result.content[0].as_text().unwrap().text.clone().to_lowercase();
+    assert!(content.contains("requested pages"));
+    assert!(content.contains("this is a test table"));
+
+    // Kill the server process
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_read_document_with_invalid_page_range() {
+    // Path to the Excel test file
+    let file_path = Path::new("tests").join("test.xlsx");
+    let file_path = file_path.to_str().unwrap().to_string();
+    
+    // Start the MCP server in a separate process
+    let service = ()
+        .serve(TokioChildProcess::new(
+            Command::new("cargo").arg("run"),
+        ).unwrap())
+        .await.unwrap();
+    
+    // Give the server some time to start
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // Call the read_office_document tool with invalid page range
+    let result = service.call_tool(CallToolRequestParam {
+        name: "read_office_document".into(),
+        arguments: serde_json::json!({
+            "file_path": file_path,
+            "pages": "999"  // Page that likely doesn't exist
+        }).as_object().cloned(),
+    }).await.unwrap();
+    println!("Invalid page range result: {:?}", result);
+    
+    // The tool call should succeed but return an error about invalid pages
+    assert!(result.is_error.is_some() && !result.is_error.unwrap());
+    
+    let content = result.content[0].as_text().unwrap().text.clone().to_lowercase();
+    assert!(content.contains("error") || content.contains("exceeds") || content.contains("invalid"));
+
+    // Kill the server process
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_read_document_with_multiple_page_selection() {
+    // Path to the Excel test file
+    let file_path = Path::new("tests").join("test.xlsx");
+    let file_path = file_path.to_str().unwrap().to_string();
+    
+    // Start the MCP server in a separate process
+    let service = ()
+        .serve(TokioChildProcess::new(
+            Command::new("cargo").arg("run"),
+        ).unwrap())
+        .await.unwrap();
+    
+    // Give the server some time to start
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // Call the read_office_document tool with multiple page selection
+    let result = service.call_tool(CallToolRequestParam {
+        name: "read_office_document".into(),
+        arguments: serde_json::json!({
+            "file_path": file_path,
+            "pages": "1,1"  // Duplicate pages (should be handled gracefully)
+        }).as_object().cloned(),
+    }).await.unwrap();
+    println!("Multiple page selection result: {:?}", result);
+    
+    // Check that the result is not an error
+    assert!(result.is_error.is_some() && !result.is_error.unwrap());
+    
+    // Check that the content contains page information
+    let content = result.content[0].as_text().unwrap().text.clone().to_lowercase();
+    assert!(content.contains("requested_pages") || content.contains("page"));
+
+    // Kill the server process
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_page_workflow_integration() {
+    // Path to the Excel test file
+    let file_path = Path::new("tests").join("test.xlsx");
+    let file_path = file_path.to_str().unwrap().to_string();
+    
+    // Start the MCP server in a separate process
+    let service = ()
+        .serve(TokioChildProcess::new(
+            Command::new("cargo").arg("run"),
+        ).unwrap())
+        .await.unwrap();
+    
+    // Give the server some time to start
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // Step 1: Get page information
+    let page_info_result = service.call_tool(CallToolRequestParam {
+        name: "get_document_page_info".into(),
+        arguments: serde_json::json!({
+            "file_path": file_path
+        }).as_object().cloned(),
+    }).await.unwrap();
+    println!("Workflow - Page info: {:?}", page_info_result);
+    assert!(page_info_result.is_error.is_some() && !page_info_result.is_error.unwrap());
+
+    // Step 2: Read specific pages based on the info
+    let read_result = service.call_tool(CallToolRequestParam {
+        name: "read_office_document".into(),
+        arguments: serde_json::json!({
+            "file_path": file_path,
+            "pages": "1"  // Read first page
+        }).as_object().cloned(),
+    }).await.unwrap();
+    println!("Workflow - Read result: {:?}", read_result);
+    assert!(read_result.is_error.is_some() && !read_result.is_error.unwrap());
+
+    // Step 3: Stream the document for comparison
+    let stream_result = service.call_tool(CallToolRequestParam {
+        name: "stream_office_document".into(),
+        arguments: serde_json::json!({
+            "file_path": file_path,
+            "chunk_size": 5000
+        }).as_object().cloned(),
+    }).await.unwrap();
+    println!("Workflow - Stream result: {:?}", stream_result);
+    assert!(stream_result.is_error.is_some() && !stream_result.is_error.unwrap());
+
+    // Verify all three approaches return content about the same document
+    let page_info_content = page_info_result.content[0].as_text().unwrap().text.clone().to_lowercase();
+    let read_content = read_result.content[0].as_text().unwrap().text.clone().to_lowercase();
+    let stream_content = stream_result.content[0].as_text().unwrap().text.clone().to_lowercase();
+
+    // All should reference the same file
+    assert!(page_info_content.contains(&file_path.to_lowercase()) || page_info_content.contains("test.xlsx"));
+    assert!(read_content.contains("this is a test table"));
+    assert!(stream_content.contains("this is a test table"));
+
+    // Kill the server process
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_read_document_with_integer_page() {
+    // Path to the Excel test file
+    let file_path = Path::new("tests").join("test.xlsx");
+    let file_path = file_path.to_str().unwrap().to_string();
+    
+    // Start the MCP server in a separate process
+    let service = ()
+        .serve(TokioChildProcess::new(
+            Command::new("cargo").arg("run"),
+        ).unwrap())
+        .await.unwrap();
+    
+    // Give the server some time to start
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // Call the read_office_document tool with integer page parameter
+    let result = service.call_tool(CallToolRequestParam {
+        name: "read_office_document".into(),
+        arguments: serde_json::json!({
+            "file_path": file_path,
+            "pages": 1  // Integer instead of string
+        }).as_object().cloned(),
+    }).await.unwrap();
+    println!("Integer page result: {:?}", result);
+    
+    // Check that the result is not an error
+    assert!(result.is_error.is_some() && !result.is_error.unwrap());
+    
+    // Check that the content contains page-specific information
+    let content = result.content[0].as_text().unwrap().text.clone().to_lowercase();
+    assert!(content.contains("requested pages") || content.contains("page"));
+    assert!(content.contains("this is a test table"));
 
     // Kill the server process
     service.cancel().await.unwrap();

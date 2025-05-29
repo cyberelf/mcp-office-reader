@@ -1,6 +1,7 @@
 mod document_parser;
 mod mcp_handler;
 mod streaming_parser;
+mod fast_pdf_extractor;
 
 use anyhow::Result;
 use tokio::runtime::Runtime;

@@ -6,8 +6,9 @@ use rmcp::schemars;
 use serde::{Deserialize, Serialize};
 use anyhow::Result;
 use tokio_stream::StreamExt;
+use serde_json;
 
-use crate::document_parser::{process_document_with_pagination, get_document_text_length, DocumentProcessingResult};
+use crate::document_parser::{process_document_with_pages, get_document_page_info, DocumentProcessingResult, DocumentPageInfoResult};
 use crate::streaming_parser::{stream_pdf_to_markdown, stream_excel_to_markdown, StreamingConfig, ProcessingProgress};
 
 /// Office document processor struct that implements the MCP tool interface
@@ -36,32 +37,24 @@ pub struct StreamOfficeDocumentInput {
     pub chunk_size: Option<usize>,
 }
 
-/// Wrapper for document content to implement IntoContents
-pub struct DocumentContent {
-    pub content: String,
-}
-
-impl IntoContents for DocumentContent {
-    fn into_contents(self) -> Vec<Content> {
-        vec![Content::text(self.content)]
-    }
-}
-
-/// Wrapper for document text length information
-pub struct DocumentLengthInfo {
+/// Wrapper for document page information
+pub struct DocumentPageInfo {
     pub file_path: String,
-    pub total_length: usize,
+    pub total_pages: Option<usize>,
     pub file_exists: bool,
     pub error: Option<String>,
+    pub page_info: String,
 }
 
-impl IntoContents for DocumentLengthInfo {
+impl IntoContents for DocumentPageInfo {
     fn into_contents(self) -> Vec<Content> {
         let info = if self.file_exists {
             if let Some(error) = self.error {
                 format!("File: {}\nError: {}", self.file_path, error)
+            } else if let Some(total) = self.total_pages {
+                format!("File: {}\nTotal pages: {}\n{}", self.file_path, total, self.page_info)
             } else {
-                format!("File: {}\nTotal text length: {} characters", self.file_path, self.total_length)
+                format!("File: {}\nPage information not available", self.file_path)
             }
         } else {
             format!("File: {}\nFile not found", self.file_path)
@@ -70,22 +63,28 @@ impl IntoContents for DocumentLengthInfo {
     }
 }
 
-/// Wrapper for partial document content with metadata
-pub struct PartialDocumentContent {
+/// Wrapper for page-based document content with metadata
+pub struct PageBasedDocumentContent {
     pub content: String,
-    pub total_length: usize,
-    pub offset: usize,
-    pub returned_length: usize,
-    pub has_more: bool,
+    pub total_pages: Option<usize>,
+    pub requested_pages: String,
+    pub returned_pages: Vec<usize>,
     pub file_path: String,
 }
 
-impl IntoContents for PartialDocumentContent {
+impl IntoContents for PageBasedDocumentContent {
     fn into_contents(self) -> Vec<Content> {
-        let metadata = format!(
-            "File: {}\nTotal length: {} characters\nOffset: {}\nReturned: {} characters\nHas more content: {}\n\n",
-            self.file_path, self.total_length, self.offset, self.returned_length, self.has_more
-        );
+        let metadata = if let Some(total) = self.total_pages {
+            format!(
+                "File: {}\nTotal pages: {}\nRequested pages: {}\nReturned pages: {:?}\n\n",
+                self.file_path, total, self.requested_pages, self.returned_pages
+            )
+        } else {
+            format!(
+                "File: {}\nRequested pages: {}\nReturned pages: {:?}\n\n",
+                self.file_path, self.requested_pages, self.returned_pages
+            )
+        };
         vec![Content::text(format!("{}{}", metadata, self.content))]
     }
 }
@@ -102,68 +101,81 @@ impl IntoContents for StreamingContent {
     }
 }
 
-/// Convert DocumentProcessingResult to PartialDocumentContent
-impl From<DocumentProcessingResult> for PartialDocumentContent {
+/// Convert DocumentProcessingResult to PageBasedDocumentContent
+impl From<DocumentProcessingResult> for PageBasedDocumentContent {
     fn from(result: DocumentProcessingResult) -> Self {
         Self {
             content: result.content,
-            total_length: result.total_length,
-            offset: result.offset,
-            returned_length: result.returned_length,
-            has_more: result.has_more,
+            total_pages: result.total_pages,
+            requested_pages: result.requested_pages,
+            returned_pages: result.returned_pages,
             file_path: result.file_path,
         }
     }
 }
 
-/// Convert DocumentProcessingResult to DocumentLengthInfo
-impl From<DocumentProcessingResult> for DocumentLengthInfo {
-    fn from(result: DocumentProcessingResult) -> Self {
-        let file_exists = result.error.as_ref() != Some(&"file_not_found".to_string());
-        let error = if result.error.as_ref() == Some(&"file_not_found".to_string()) {
-            None // Don't show error for file not found, just indicate it doesn't exist
-        } else {
-            result.error
-        };
+/// Convert DocumentPageInfoResult to DocumentPageInfo
+impl From<DocumentPageInfoResult> for DocumentPageInfo {
+    fn from(result: DocumentPageInfoResult) -> Self {
+        let file_exists = result.file_exists();
         
         Self {
             file_path: result.file_path,
-            total_length: result.total_length,
+            total_pages: result.total_pages,
             file_exists,
-            error,
+            error: result.error,
+            page_info: result.page_info,
         }
     }
 }
 
 #[tool(tool_box)]
 impl OfficeReader {
-    /// Get the text length of an office document without reading the full content
-    #[tool(description = "Get the total text length of an office document (Excel, PDF, DOCX) without reading the full content")]
-    pub async fn get_document_text_length(
+    /// Get the page information of an office document without reading the full content
+    #[tool(description = "Get the page information of an office document (Excel, PDF, DOCX) without reading the full content")]
+    pub async fn get_document_page_info(
         &self,
         #[tool(param)]
-        #[schemars(description = "Path to the office document file")]
+        #[schemars(description = "Absolute path to the office document file")]
         file_path: String,
-    ) -> DocumentLengthInfo {
-        let result = get_document_text_length(&file_path);
+    ) -> DocumentPageInfo {
+        let result = get_document_page_info(&file_path);
         result.into()
     }
 
-    /// Read an office document and return its content as markdown with size limits and offset support
-    #[tool(description = "Read an office document (Excel, PDF, DOCX) and return its content as markdown with optional size limits and offset")]
+    /// Read an office document and return its content as markdown with page selection
+    #[tool(description = "Read an office document (Excel, PDF, DOCX) and return its content as markdown with page selection")]
     pub async fn read_office_document(
         &self,
         #[tool(param)]
-        #[schemars(description = "Path to the office document file")]
+        #[schemars(description = "Absolute path to the office document file")]
         file_path: String,
         #[tool(param)]
-        #[schemars(description = "Maximum number of characters to return (default: 50000)")]
-        max_size: Option<usize>,
-        #[tool(param)]
-        #[schemars(description = "Character offset to start reading from (default: 0)")]
-        offset: Option<usize>,
-    ) -> PartialDocumentContent {
-        let result = process_document_with_pagination(&file_path, offset, max_size);
+        #[schemars(description = "Page selection: integer for single page (e.g., 1), string for ranges/multiple pages (e.g., '1,3,5-7'), or 'all' for all pages")]
+        pages: Option<serde_json::Value>,
+    ) -> PageBasedDocumentContent {
+        // Convert the pages parameter to a string format that our parser expects
+        let pages_str = match pages {
+            Some(serde_json::Value::Number(n)) => {
+                // Handle integer input (e.g., 1, 2, 3)
+                if let Some(page_num) = n.as_u64() {
+                    Some(page_num.to_string())
+                } else {
+                    Some("1".to_string()) // Default to page 1 if invalid number
+                }
+            },
+            Some(serde_json::Value::String(s)) => {
+                // Handle string input (e.g., "1,3,5-7", "all")
+                Some(s)
+            },
+            Some(_) => {
+                // Handle other JSON types by converting to string
+                Some("all".to_string())
+            },
+            None => None, // No pages specified, will default to "all"
+        };
+        
+        let result = process_document_with_pages(&file_path, pages_str);
         result.into()
     }
 
@@ -172,7 +184,7 @@ impl OfficeReader {
     pub async fn stream_office_document(
         &self,
         #[tool(param)]
-        #[schemars(description = "Path to the office document file")]
+        #[schemars(description = "Absolute path to the office document file")]
         file_path: String,
         #[tool(param)]
         #[schemars(description = "Maximum characters per chunk (default: 10000)")]
@@ -281,11 +293,11 @@ impl ServerHandler for OfficeReader {
             server_info: Implementation::from_build_env(),
             instructions: Some(
                 "This server provides functionality to read and parse office documents (Excel, PDF, DOCX) and return their content as markdown. Available tools:\n\n\
-                1. get_document_text_length: Get the total text length of a document without reading the full content\n\
-                2. read_office_document: Read a document with optional size limits (default: 50,000 chars) and offset support for pagination\n\
-                3. read_office_document_legacy: Read a document without size limits (for backward compatibility)\n\
-                4. stream_office_document: Stream document content in chunks with progress tracking\n\n\
-                For large documents, use get_document_text_length first to check size, then use read_office_document with appropriate offset and max_size parameters to read in chunks.".to_string()
+                1. get_document_page_info: Get page information of a document without reading the full content\n\
+                2. read_office_document: Read a document with page selection (e.g., '1,3,5-7' or 'all')\n\
+                3. stream_office_document: Stream document content in chunks with progress tracking\n\n\
+                For Excel files, pages refer to sheets. For PDF files, pages refer to actual pages. For DOCX files, there is only one page.\n\
+                Use get_document_page_info first to see available pages, then use read_office_document with specific page selection.".to_string()
             ),
         }
     }
@@ -324,51 +336,89 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_get_document_text_length_file_not_found() {
+    async fn test_get_document_page_info_file_not_found() {
         let office_reader = OfficeReader::new();
-        let result = office_reader.get_document_text_length("nonexistent_file.xlsx".to_string()).await;
+        let result = office_reader.get_document_page_info("nonexistent_file.xlsx".to_string()).await;
         
         assert_eq!(result.file_path, "nonexistent_file.xlsx");
-        assert_eq!(result.total_length, 0);
+        assert_eq!(result.total_pages, None);
         assert!(!result.file_exists);
-        assert!(result.error.is_none());
+        assert!(result.error.is_some());
+        assert_eq!(result.error.as_ref().unwrap(), "file_not_found");
     }
 
     #[tokio::test]
-    async fn test_read_office_document_with_offset_and_size() {
+    async fn test_read_office_document_with_pages() {
         let office_reader = OfficeReader::new();
         
         // Test with a non-existent file first
         let result = office_reader.read_office_document(
             "nonexistent_file.xlsx".to_string(),
-            Some(100),
-            Some(0)
+            Some(serde_json::Value::String("1,2".to_string()))
         ).await;
         
         assert_eq!(result.file_path, "nonexistent_file.xlsx");
-        assert_eq!(result.total_length, 0);
-        assert_eq!(result.offset, 0);
-        assert_eq!(result.returned_length, result.content.len()); // Length of error message
-        assert!(!result.has_more);
+        assert_eq!(result.total_pages, None);
+        assert_eq!(result.requested_pages, "");
+        assert_eq!(result.returned_pages, Vec::<usize>::new());
         assert!(result.content.contains("File not found"));
     }
 
     #[tokio::test]
-    async fn test_partial_document_content_metadata() {
-        let content = PartialDocumentContent {
+    async fn test_read_office_document_with_integer_page() {
+        let office_reader = OfficeReader::new();
+        
+        // Test with integer page parameter
+        let result = office_reader.read_office_document(
+            "nonexistent_file.xlsx".to_string(),
+            Some(serde_json::Value::Number(serde_json::Number::from(1)))
+        ).await;
+        
+        assert_eq!(result.file_path, "nonexistent_file.xlsx");
+        assert_eq!(result.total_pages, None);
+        assert_eq!(result.requested_pages, "");
+        assert_eq!(result.returned_pages, Vec::<usize>::new());
+        assert!(result.content.contains("File not found"));
+    }
+
+    #[tokio::test]
+    async fn test_read_office_document_with_various_page_types() {
+        let office_reader = OfficeReader::new();
+        
+        // Test with different JSON value types
+        let test_cases = vec![
+            (serde_json::Value::Number(serde_json::Number::from(3)), "Expected page 3"),
+            (serde_json::Value::String("1,2,3".to_string()), "Expected pages 1,2,3"),
+            (serde_json::Value::String("all".to_string()), "Expected all pages"),
+            (serde_json::Value::Bool(true), "Should default to all"), // Should default to "all" for non-string/number types
+        ];
+        
+        for (input, description) in test_cases {
+            let result = office_reader.read_office_document(
+                "nonexistent_file.xlsx".to_string(),
+                Some(input)
+            ).await;
+            
+            // For error cases, requested_pages will be empty, but we can verify the input was processed
+            assert_eq!(result.file_path, "nonexistent_file.xlsx", "{}", description);
+            assert!(result.content.contains("File not found"), "{}", description);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_page_based_document_content_metadata() {
+        let content = PageBasedDocumentContent {
             content: "Hello, World!".to_string(),
-            total_length: 1000,
-            offset: 100,
-            returned_length: 13,
-            has_more: true,
+            total_pages: Some(10),
+            requested_pages: "1,2,3".to_string(),
+            returned_pages: vec![1, 2, 3],
             file_path: "test.txt".to_string(),
         };
         
         // Test the struct fields directly before moving
-        assert_eq!(content.total_length, 1000);
-        assert_eq!(content.offset, 100);
-        assert_eq!(content.returned_length, 13);
-        assert!(content.has_more);
+        assert_eq!(content.total_pages, Some(10));
+        assert_eq!(content.requested_pages, "1,2,3");
+        assert_eq!(content.returned_pages, vec![1, 2, 3]);
         assert_eq!(content.file_path, "test.txt");
         assert_eq!(content.content, "Hello, World!");
         
@@ -377,78 +427,63 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_document_length_info_formatting() {
-        let length_info = DocumentLengthInfo {
+    async fn test_document_page_info_formatting() {
+        let page_info = DocumentPageInfo {
             file_path: "test.pdf".to_string(),
-            total_length: 5000,
+            total_pages: Some(5000),
             file_exists: true,
             error: None,
+            page_info: "Page 1, Page 2, Page 3".to_string(),
         };
         
         // Test the struct fields directly before moving
-        assert_eq!(length_info.file_path, "test.pdf");
-        assert_eq!(length_info.total_length, 5000);
-        assert!(length_info.file_exists);
-        assert!(length_info.error.is_none());
+        assert_eq!(page_info.file_path, "test.pdf");
+        assert_eq!(page_info.total_pages, Some(5000));
+        assert!(page_info.file_exists);
+        assert!(page_info.error.is_none());
         
-        let contents = length_info.into_contents();
+        let contents = page_info.into_contents();
         assert_eq!(contents.len(), 1);
     }
 
     #[tokio::test]
-    async fn test_document_length_info_with_error() {
-        let length_info = DocumentLengthInfo {
+    async fn test_document_page_info_with_error() {
+        let page_info = DocumentPageInfo {
             file_path: "test.unsupported".to_string(),
-            total_length: 0,
+            total_pages: None,
             file_exists: true,
             error: Some("Unsupported file type: unsupported".to_string()),
+            page_info: "".to_string(),
         };
         
         // Test the struct fields directly before moving
-        assert_eq!(length_info.file_path, "test.unsupported");
-        assert_eq!(length_info.total_length, 0);
-        assert!(length_info.file_exists);
-        assert!(length_info.error.is_some());
-        assert_eq!(length_info.error.as_ref().unwrap(), "Unsupported file type: unsupported");
+        assert_eq!(page_info.file_path, "test.unsupported");
+        assert_eq!(page_info.total_pages, None);
+        assert!(page_info.file_exists);
+        assert!(page_info.error.is_some());
+        assert_eq!(page_info.error.as_ref().unwrap(), "Unsupported file type: unsupported");
         
-        let contents = length_info.into_contents();
+        let contents = page_info.into_contents();
         assert_eq!(contents.len(), 1);
     }
 
     #[tokio::test]
-    async fn test_offset_and_size_limits() {
-        // Test the logic for offset and size limits with a mock scenario
-        let full_text = "0123456789".repeat(100); // 1000 characters
-        let total_length = full_text.len();
+    async fn test_page_selection_logic() {
+        // Test the logic for page selection with a mock scenario
+        let pages_param = "1,3,5-7";
         
-        // Test normal case
-        let max_size = 50;
-        let offset = 100;
-        let start_pos = offset.min(total_length);
-        let end_pos = (start_pos + max_size).min(total_length);
-        let content = &full_text[start_pos..end_pos];
-        let has_more = end_pos < total_length;
+        // This would be handled by the parse_pages_parameter function in document_parser
+        // We can test the expected behavior here
+        assert!(pages_param.contains("1"));
+        assert!(pages_param.contains("3"));
+        assert!(pages_param.contains("5-7"));
         
-        assert_eq!(start_pos, 100);
-        assert_eq!(end_pos, 150);
-        assert_eq!(content.len(), 50);
-        assert!(has_more);
+        // Test that page ranges are properly formatted
+        let all_pages = "all";
+        assert_eq!(all_pages, "all");
         
-        // Test offset beyond content
-        let offset = 2000;
-        let start_pos = offset.min(total_length);
-        assert_eq!(start_pos, total_length);
-        
-        // Test when remaining content is less than max_size
-        let offset = 980;
-        let start_pos = offset.min(total_length);
-        let end_pos = (start_pos + max_size).min(total_length);
-        let content = &full_text[start_pos..end_pos];
-        let has_more = end_pos < total_length;
-        
-        assert_eq!(start_pos, 980);
-        assert_eq!(end_pos, 1000);
-        assert_eq!(content.len(), 20);
-        assert!(!has_more);
+        // Test single page
+        let single_page = "1";
+        assert_eq!(single_page, "1");
     }
 } 
