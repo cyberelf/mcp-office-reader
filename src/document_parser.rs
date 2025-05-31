@@ -5,6 +5,11 @@ use std::io::Read;
 use anyhow::{Result, Context};
 use calamine::{Reader, open_workbook, Xlsx, Data};
 use crate::fast_pdf_extractor::FastPdfExtractor;
+use crate::shared_utils::{parse_pages_parameter, validate_file_path, get_or_cache_pdf_content};
+use crate::powerpoint_parser::{
+    process_powerpoint_with_slides, 
+    get_powerpoint_slide_info,
+};
 
 /// Result of document processing with page-based support
 #[derive(Debug, Clone)]
@@ -194,70 +199,6 @@ fn extract_text_from_docx(_doc: &docx_rs::Docx) -> String {
     "[DOCX content extraction - implementation needed based on docx-rs API]".to_string()
 }
 
-/// Parse a comma-separated string of page numbers and ranges
-/// Examples: "1,3,5-7" -> [1,3,5,6,7], "all" -> None (meaning all pages)
-fn parse_pages_parameter(pages: &str, total_pages: usize) -> Result<Vec<usize>, String> {
-    if pages.trim().is_empty() || pages.trim().to_lowercase() == "all" {
-        return Ok((1..=total_pages).collect());
-    }
-    
-    let mut page_numbers = Vec::new();
-    
-    for part in pages.split(',') {
-        let part = part.trim();
-        
-        if part.contains('-') {
-            // Handle range like "5-7"
-            let range_parts: Vec<&str> = part.split('-').collect();
-            if range_parts.len() != 2 {
-                return Err(format!("Invalid range format: {}", part));
-            }
-            
-            let start: usize = range_parts[0].trim().parse()
-                .map_err(|_| format!("Invalid page number: {}", range_parts[0]))?;
-            let end: usize = range_parts[1].trim().parse()
-                .map_err(|_| format!("Invalid page number: {}", range_parts[1]))?;
-            
-            if start == 0 || end == 0 {
-                return Err("Page numbers must start from 1".to_string());
-            }
-            
-            if start > end {
-                return Err(format!("Invalid range: {} > {}", start, end));
-            }
-            
-            if end > total_pages {
-                return Err(format!("Page {} exceeds total pages ({})", end, total_pages));
-            }
-            
-            for page in start..=end {
-                if !page_numbers.contains(&page) {
-                    page_numbers.push(page);
-                }
-            }
-        } else {
-            // Handle single page number
-            let page: usize = part.parse()
-                .map_err(|_| format!("Invalid page number: {}", part))?;
-            
-            if page == 0 {
-                return Err("Page numbers must start from 1".to_string());
-            }
-            
-            if page > total_pages {
-                return Err(format!("Page {} exceeds total pages ({})", page, total_pages));
-            }
-            
-            if !page_numbers.contains(&page) {
-                page_numbers.push(page);
-            }
-        }
-    }
-    
-    page_numbers.sort();
-    Ok(page_numbers)
-}
-
 /// Process a document based on its file extension with page-based selection
 pub fn process_document_with_pages(
     file_path: &str,
@@ -266,35 +207,20 @@ pub fn process_document_with_pages(
     let file_path_string = file_path.to_string();
     let pages = pages.unwrap_or_else(|| "all".to_string());
     
-    // Check if file exists
-    if !Path::new(file_path).exists() {
-        return DocumentProcessingResult::error(
-            file_path_string,
-            format!("File not found: {}", file_path),
-        );
-    }
+    // Validate file and get its type
+    let file_type = match validate_file_path(file_path) {
+        Ok(ext) => ext,
+        Err(e) => return DocumentProcessingResult::error(file_path_string, e),
+    };
     
-    // Determine file type from extension
-    let extension = Path::new(file_path)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| ext.to_lowercase());
-    
-    match extension {
-        Some(ext) => {
-            match ext.as_str() {
-                "xlsx" | "xls" => process_excel_with_pages(file_path, &pages),
-                "pdf" => process_pdf_with_pages(file_path, &pages),
-                "docx" | "doc" => process_docx_with_pages(file_path, &pages),
-                _ => DocumentProcessingResult::error(
-                    file_path_string,
-                    format!("Unsupported file type: {}", ext),
-                ),
-            }
-        }
-        None => DocumentProcessingResult::error(
+    match file_type.as_str() {
+        "xlsx" | "xls" => process_excel_with_pages(file_path, &pages),
+        "pdf" => process_pdf_with_pages(file_path, &pages),
+        "docx" | "doc" => process_docx_with_pages(file_path, &pages),
+        "pptx" | "ppt" => process_powerpoint_with_pages_wrapper(file_path, &pages),
+        _ => DocumentProcessingResult::error(
             file_path_string,
-            "Unable to determine file type (no extension)".to_string(),
+            format!("Unsupported file type: {}", file_type),
         ),
     }
 }
@@ -336,7 +262,7 @@ fn process_excel_with_pages(file_path: &str, pages: &str) -> DocumentProcessingR
         
         markdown.push_str(&format!("## Sheet {}: {}\n\n", sheet_index, sheet_name));
         
-        if let Ok(range) = workbook.worksheet_range(sheet_name) {
+        if let Ok(range) = workbook.worksheet_range(sheet_name.as_str()) {
             markdown.push_str(&range_to_markdown_table(&range));
             markdown.push_str("\n\n");
         } else {
@@ -357,15 +283,21 @@ fn process_excel_with_pages(file_path: &str, pages: &str) -> DocumentProcessingR
 fn process_pdf_with_pages(file_path: &str, pages: &str) -> DocumentProcessingResult {
     let file_path_string = file_path.to_string();
     
-    // Get the actual page count using FastPdfExtractor
-    let total_pages = match FastPdfExtractor::get_page_count(file_path) {
-        Ok(count) => count,
+    // Use the cache to get PDF content and page count
+    let pdf_cache = match get_or_cache_pdf_content(file_path) {
+        Ok(cache) => cache,
         Err(e) => return DocumentProcessingResult::error(
             file_path_string,
-            format!("Failed to get PDF page count: {}", e),
+            format!("Failed to get PDF content: {}", e),
         ),
     };
-    
+    let total_pages = match pdf_cache.total_pages {
+        Some(count) => count,
+        None => return DocumentProcessingResult::error(
+            file_path_string,
+            "Failed to determine PDF page count".to_string(),
+        ),
+    };
     // Parse the pages parameter
     let requested_page_indices = match parse_pages_parameter(pages, total_pages) {
         Ok(indices) => indices,
@@ -374,7 +306,6 @@ fn process_pdf_with_pages(file_path: &str, pages: &str) -> DocumentProcessingRes
             format!("Invalid pages parameter: {}", e),
         ),
     };
-    
     // Extract text from specific pages using the new page-specific extraction
     let extracted_text = match FastPdfExtractor::extract_pages_text(file_path, &requested_page_indices) {
         Ok(text) => text,
@@ -383,9 +314,7 @@ fn process_pdf_with_pages(file_path: &str, pages: &str) -> DocumentProcessingRes
             format!("Failed to extract PDF pages: {}", e),
         ),
     };
-    
     let mut markdown = format!("# {}\n\n", Path::new(file_path).file_name().unwrap().to_string_lossy());
-    
     // Add the extracted content
     if requested_page_indices.len() == total_pages {
         // All pages requested
@@ -394,9 +323,7 @@ fn process_pdf_with_pages(file_path: &str, pages: &str) -> DocumentProcessingRes
         // Specific pages requested
         markdown.push_str(&format!("## Content (Pages: {})\n\n", pages));
     }
-    
     markdown.push_str(&extracted_text);
-    
     DocumentProcessingResult::success(
         markdown,
         Some(total_pages),
@@ -454,97 +381,130 @@ fn process_docx_with_pages(file_path: &str, pages: &str) -> DocumentProcessingRe
     )
 }
 
+/// Wrapper function to convert PowerPoint result to DocumentProcessingResult
+fn process_powerpoint_with_pages_wrapper(
+    file_path: &str,
+    pages: &str,
+) -> DocumentProcessingResult {
+    let ppt_result = process_powerpoint_with_slides(file_path, Some(pages.to_string()));
+    
+    // Convert PowerPointProcessingResult to DocumentProcessingResult
+    if let Some(error) = ppt_result.error {
+        DocumentProcessingResult::error(ppt_result.file_path, error)
+    } else {
+        DocumentProcessingResult::success(
+            ppt_result.content,
+            ppt_result.total_slides,
+            ppt_result.requested_slides,
+            ppt_result.returned_slides,
+            ppt_result.file_path,
+        )
+    }
+}
+
 /// Get document page information without reading the full content
 pub fn get_document_page_info(file_path: &str) -> DocumentPageInfoResult {
     let file_path_string = file_path.to_string();
     
-    // Check if file exists
-    if !Path::new(file_path).exists() {
-        return DocumentPageInfoResult::error(
-            file_path_string,
-            "file_not_found".to_string(),
-        );
-    }
-    
-    // Determine file type from extension
-    let extension = Path::new(file_path)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| ext.to_lowercase());
-    
-    match extension {
-        Some(ext) => {
-            match ext.as_str() {
-                "xlsx" | "xls" => {
-                    use calamine::{Reader, open_workbook, Xlsx};
-                    
-                    match open_workbook::<Xlsx<_>, _>(file_path) {
-                        Ok(workbook) => {
-                            let sheet_names = workbook.sheet_names();
-                            let total_sheets = sheet_names.len();
-                            let sheet_list = sheet_names.iter()
-                                .enumerate()
-                                .map(|(i, name)| format!("  {}: {}", i + 1, name))
-                                .collect::<Vec<_>>()
-                                .join("\n");
-                            
-                            DocumentPageInfoResult::success(
-                                file_path_string,
-                                Some(total_sheets),
-                                format!("Excel file with {} sheets:\n{}", total_sheets, sheet_list),
-                            )
-                        },
-                        Err(e) => DocumentPageInfoResult::error(
-                            file_path_string,
-                            format!("Failed to open Excel file: {}", e),
-                        ),
-                    }
-                },
-                "pdf" => {
-                    // Use FastPdfExtractor to get actual page count efficiently
-                    match FastPdfExtractor::get_page_count(file_path) {
-                        Ok(page_count) => {
-                            DocumentPageInfoResult::success(
-                                file_path_string,
-                                Some(page_count),
-                                format!("PDF file with {} pages", page_count),
-                            )
-                        },
-                        Err(e) => DocumentPageInfoResult::error(
-                            file_path_string,
-                            format!("Failed to analyze PDF: {}", e),
-                        ),
-                    }
-                },
-                "docx" | "doc" => {
-                    // Use actual DOCX page counting
-                    match get_docx_page_count(file_path) {
-                        Ok(page_count) => {
-                            DocumentPageInfoResult::success(
-                                file_path_string,
-                                Some(page_count),
-                                format!("DOCX file with {} estimated pages", page_count),
-                            )
-                        },
-                        Err(e) => {
-                            log::warn!("Failed to get DOCX page count: {}", e);
-                            DocumentPageInfoResult::success(
-                                file_path_string,
-                                Some(1),
-                                "DOCX file (page count estimation failed, defaulting to 1 page)".to_string(),
-                            )
-                        }
-                    }
-                },
-                _ => DocumentPageInfoResult::error(
-                    file_path_string,
-                    format!("Unsupported file type: {}", ext),
-                ),
+    // Validate file and get its type
+    let file_type = match validate_file_path(file_path) {
+        Ok(ext) => ext,
+        Err(e) => {
+            // Check if it's a file not found error
+            if e.contains("File not found") {
+                return DocumentPageInfoResult::error(file_path_string, "file_not_found".to_string());
+            } else {
+                return DocumentPageInfoResult::error(file_path_string, e);
             }
         }
-        None => DocumentPageInfoResult::error(
+    };
+    
+    match file_type.as_str() {
+        "xlsx" | "xls" => {
+            use calamine::{Reader, open_workbook, Xlsx};
+            
+            match open_workbook::<Xlsx<_>, _>(file_path) {
+                Ok(workbook) => {
+                    let sheet_names = workbook.sheet_names();
+                    let total_sheets = sheet_names.len();
+                    let sheet_list = sheet_names.iter()
+                        .enumerate()
+                        .map(|(i, name)| format!("  {}: {}", i + 1, name))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    
+                    DocumentPageInfoResult::success(
+                        file_path_string,
+                        Some(total_sheets),
+                        format!("Excel file with {} sheets:\n{}", total_sheets, sheet_list),
+                    )
+                },
+                Err(e) => DocumentPageInfoResult::error(
+                    file_path_string,
+                    format!("Failed to open Excel file: {}", e),
+                ),
+            }
+        },
+        "pdf" => {
+            // Use the cache to get PDF content and page count
+            match get_or_cache_pdf_content(file_path) {
+                Ok(pdf_cache) => {
+                    if let Some(page_count) = pdf_cache.total_pages {
+                        DocumentPageInfoResult::success(
+                            file_path_string,
+                            Some(page_count),
+                            format!("PDF file with {} pages", page_count),
+                        )
+                    } else {
+                        DocumentPageInfoResult::error(
+                            file_path_string,
+                            "Failed to determine PDF page count".to_string(),
+                        )
+                    }
+                },
+                Err(e) => DocumentPageInfoResult::error(
+                    file_path_string,
+                    format!("Failed to analyze PDF: {}", e),
+                ),
+            }
+        },
+        "docx" | "doc" => {
+            // Use actual DOCX page counting
+            match get_docx_page_count(file_path) {
+                Ok(page_count) => {
+                    DocumentPageInfoResult::success(
+                        file_path_string,
+                        Some(page_count),
+                        format!("DOCX file with {} estimated pages", page_count),
+                    )
+                },
+                Err(e) => {
+                    log::warn!("Failed to get DOCX page count: {}", e);
+                    DocumentPageInfoResult::success(
+                        file_path_string,
+                        Some(1),
+                        "DOCX file (page count estimation failed, defaulting to 1 page)".to_string(),
+                    )
+                }
+            }
+        },
+        "pptx" | "ppt" => {
+            let ppt_result = get_powerpoint_slide_info(file_path);
+            
+            // Convert PowerPointPageInfoResult to DocumentPageInfoResult
+            if let Some(error) = ppt_result.error {
+                DocumentPageInfoResult::error(ppt_result.file_path, error)
+            } else {
+                DocumentPageInfoResult::success(
+                    ppt_result.file_path,
+                    ppt_result.total_slides,
+                    ppt_result.slide_info,
+                )
+            }
+        },
+        _ => DocumentPageInfoResult::error(
             file_path_string,
-            "Unable to determine file type (no extension)".to_string(),
+            format!("Unsupported file type: {}", file_type),
         ),
     }
 }
@@ -622,41 +582,6 @@ mod tests {
         assert_eq!(result.returned_pages, Vec::<usize>::new());
         assert_eq!(result.file_path, "test.pdf");
         assert_eq!(result.error.as_ref().unwrap(), "Test error message");
-    }
-
-    #[test]
-    fn test_parse_pages_parameter() {
-        // Test "all" parameter
-        assert_eq!(parse_pages_parameter("all", 5).unwrap(), vec![1, 2, 3, 4, 5]);
-        assert_eq!(parse_pages_parameter("", 3).unwrap(), vec![1, 2, 3]);
-        
-        // Test single pages
-        assert_eq!(parse_pages_parameter("1", 5).unwrap(), vec![1]);
-        assert_eq!(parse_pages_parameter("3", 5).unwrap(), vec![3]);
-        
-        // Test multiple pages
-        assert_eq!(parse_pages_parameter("1,3,5", 5).unwrap(), vec![1, 3, 5]);
-        assert_eq!(parse_pages_parameter("5,1,3", 5).unwrap(), vec![1, 3, 5]); // Should be sorted
-        
-        // Test ranges
-        assert_eq!(parse_pages_parameter("1-3", 5).unwrap(), vec![1, 2, 3]);
-        assert_eq!(parse_pages_parameter("2-4", 5).unwrap(), vec![2, 3, 4]);
-        
-        // Test mixed ranges and single pages
-        assert_eq!(parse_pages_parameter("1,3-5", 5).unwrap(), vec![1, 3, 4, 5]);
-        assert_eq!(parse_pages_parameter("1-2,4,6-7", 10).unwrap(), vec![1, 2, 4, 6, 7]);
-        
-        // Test duplicates (should be removed)
-        assert_eq!(parse_pages_parameter("1,1,2", 5).unwrap(), vec![1, 2]);
-        assert_eq!(parse_pages_parameter("1-3,2-4", 5).unwrap(), vec![1, 2, 3, 4]);
-        
-        // Test error cases
-        assert!(parse_pages_parameter("0", 5).is_err()); // Page 0 not allowed
-        assert!(parse_pages_parameter("6", 5).is_err()); // Page exceeds total
-        assert!(parse_pages_parameter("3-2", 5).is_err()); // Invalid range
-        assert!(parse_pages_parameter("1-6", 5).is_err()); // Range exceeds total
-        assert!(parse_pages_parameter("abc", 5).is_err()); // Invalid number
-        assert!(parse_pages_parameter("1-2-3", 5).is_err()); // Invalid range format
     }
 
     #[test]
@@ -766,7 +691,6 @@ mod tests {
     #[test]
     fn test_get_docx_page_count_invalid_file() {
         // Create a temporary file with invalid DOCX content
-        use std::fs::File;
         use std::io::Write;
         use tempfile::NamedTempFile;
         
@@ -786,7 +710,7 @@ mod tests {
         
         // Should fail with page count error, not text extraction error
         assert!(result.error.is_some());
-        assert!(result.content.contains("Failed to get PDF page count") || 
+        assert!(result.content.contains("Failed to get PDF content") || 
                 result.content.contains("File not found"));
     }
 
@@ -864,13 +788,13 @@ mod tests {
         
         // Should fail with page count error or file not found, but the logic should attempt page extraction
         assert!(result.error.is_some());
-        assert!(result.content.contains("Failed to get PDF page count") || 
+        assert!(result.content.contains("Failed to get PDF content") || 
                 result.content.contains("File not found"));
         
         // Test with invalid page parameter
         let result = process_pdf_with_pages("nonexistent.pdf", "invalid");
         assert!(result.error.is_some());
-        assert!(result.content.contains("Failed to get PDF page count") || 
+        assert!(result.content.contains("Failed to get PDF content") || 
                 result.content.contains("File not found"));
     }
 
@@ -884,7 +808,7 @@ mod tests {
         
         // Should fail at the page count stage, not at parameter parsing
         assert!(result.error.is_some());
-        assert!(result.content.contains("Failed to get PDF page count") || 
+        assert!(result.content.contains("Failed to get PDF content") || 
                 result.content.contains("File not found"));
         
         // The requested_pages should be preserved even in error cases

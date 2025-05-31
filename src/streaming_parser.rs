@@ -1,24 +1,12 @@
 use std::path::Path;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 use anyhow::{Result, Context};
 use futures::stream::{self, Stream};
 use serde::{Deserialize, Serialize};
-use crate::fast_pdf_extractor::FastPdfExtractor;
-
-/// Cache for storing extracted PDF content to avoid re-parsing
-#[derive(Debug, Clone)]
-struct PdfCache {
-    content: String,
-    char_indices: Vec<usize>, // Byte indices for each character for efficient slicing
-}
-
-/// Global cache for PDF content (thread-safe)
-type GlobalPdfCache = Arc<Mutex<HashMap<String, PdfCache>>>;
-
-lazy_static::lazy_static! {
-    static ref PDF_CACHE: GlobalPdfCache = Arc::new(Mutex::new(HashMap::new()));
-}
+use crate::shared_utils::{
+    get_or_cache_pdf_content, extract_char_range_from_cache,
+    generate_file_header, generate_chunk_header,
+    break_at_word_boundary
+};
 
 /// Progress information for streaming document processing
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,46 +70,6 @@ pub fn stream_pdf_to_markdown(
     )
 }
 
-/// Get or create cached PDF content
-fn get_or_cache_pdf_content(file_path: &str) -> Result<PdfCache> {
-    let cache_key = file_path.to_string();
-    
-    // Check if already cached
-    {
-        let cache = PDF_CACHE.lock().unwrap();
-        if let Some(cached) = cache.get(&cache_key) {
-            return Ok(cached.clone());
-        }
-    }
-    
-    // Extract PDF content (only once per file) using the fastest available backend
-    let full_text = FastPdfExtractor::extract_text(file_path)
-        .with_context(|| format!("Failed to extract text from PDF: {}", file_path))?;
-    
-    // Pre-compute character byte indices for efficient slicing
-    let mut char_indices = Vec::new();
-    let mut byte_pos = 0;
-    
-    for ch in full_text.chars() {
-        char_indices.push(byte_pos);
-        byte_pos += ch.len_utf8();
-    }
-    char_indices.push(byte_pos); // Add final position
-    
-    let pdf_cache = PdfCache {
-        content: full_text,
-        char_indices,
-    };
-    
-    // Store in cache
-    {
-        let mut cache = PDF_CACHE.lock().unwrap();
-        cache.insert(cache_key, pdf_cache.clone());
-    }
-    
-    Ok(pdf_cache)
-}
-
 /// Process a chunk of PDF content by character count (optimized version)
 async fn process_pdf_chunk(
     file_path: &str,
@@ -152,46 +100,18 @@ async fn process_pdf_chunk(
         
         // Add header for first chunk
         if start_char == 0 {
-            let filename = Path::new(&file_path)
-                .file_name()
-                .unwrap()
-                .to_string_lossy();
-            chunk_content.push_str(&format!("# {}\n\n", filename));
+            chunk_content.push_str(&generate_file_header(&file_path));
         }
         
         // Add chunk header
         let chunk_num = start_char / max_chars + 1;
-        chunk_content.push_str(&format!("## Chunk {} (characters {}-{})\n\n", 
-            chunk_num, start_char, end_char));
+        chunk_content.push_str(&generate_chunk_header(chunk_num, start_char, end_char, "characters"));
         
-        // Extract the chunk using pre-computed byte indices (much faster)
-        let start_byte = pdf_cache.char_indices[start_char];
-        let end_byte = if end_char < pdf_cache.char_indices.len() {
-            pdf_cache.char_indices[end_char]
-        } else {
-            pdf_cache.content.len()
-        };
-        
-        let chunk_text = &pdf_cache.content[start_byte..end_byte];
+        // Extract the chunk using shared utility
+        let chunk_text = extract_char_range_from_cache(&pdf_cache, start_char, end_char)?;
         
         // Try to break at word boundaries for better readability
-        let final_chunk = if end_char < total_chars {
-            if let Some(last_space_pos) = chunk_text.rfind(' ') {
-                let word_boundary_chunk = &chunk_text[..last_space_pos];
-                // Ensure we make meaningful progress (at least 10% of max_chars or minimum 50 chars)
-                let min_progress = std::cmp::max(max_chars / 10, 50);
-                if word_boundary_chunk.chars().count() >= min_progress {
-                    word_boundary_chunk
-                } else {
-                    // If word boundary breaking results in too small a chunk, use the full chunk
-                    chunk_text
-                }
-            } else {
-                chunk_text
-            }
-        } else {
-            chunk_text
-        };
+        let final_chunk = break_at_word_boundary(&chunk_text, max_chars);
         
         chunk_content.push_str(final_chunk);
         chunk_content.push_str("\n\n");
@@ -316,22 +236,6 @@ async fn process_excel_chunk(
             error: None,
         })
     }).await?
-}
-
-/// Clear the PDF cache to free memory
-pub fn clear_pdf_cache() {
-    let mut cache = PDF_CACHE.lock().unwrap();
-    cache.clear();
-}
-
-/// Get cache statistics for monitoring
-pub fn get_cache_stats() -> (usize, usize) {
-    let cache = PDF_CACHE.lock().unwrap();
-    let num_files = cache.len();
-    let total_memory = cache.values()
-        .map(|pdf_cache| pdf_cache.content.len() + pdf_cache.char_indices.len() * std::mem::size_of::<usize>())
-        .sum();
-    (num_files, total_memory)
 }
 
 #[cfg(test)]
@@ -529,46 +433,4 @@ mod tests {
         assert!(iteration_count <= 10);
     }
 
-    #[test]
-    fn test_cache_management() {
-        // Clear cache first
-        clear_pdf_cache();
-        
-        let (num_files, total_memory) = get_cache_stats();
-        assert_eq!(num_files, 0);
-        assert_eq!(total_memory, 0);
-        
-        // Test that cache functions don't panic
-        clear_pdf_cache(); // Should not panic on empty cache
-    }
-
-    #[test]
-    fn test_pdf_cache_structure() {
-        let cache = PdfCache {
-            content: "Hello world".to_string(),
-            char_indices: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
-        };
-        
-        assert_eq!(cache.content.len(), 11);
-        assert_eq!(cache.char_indices.len(), 12); // One more than characters for end position
-    }
-
-    #[tokio::test]
-    async fn test_optimized_pdf_processing_with_cache() {
-        // Test that the optimized version handles errors gracefully
-        let config = StreamingConfig::default();
-        let mut stream = Box::pin(stream_pdf_to_markdown("nonexistent.pdf", config));
-        
-        let result = stream.next().await;
-        assert!(result.is_some());
-        
-        let progress = result.unwrap();
-        assert!(progress.is_complete);
-        assert!(progress.error.is_some());
-        
-        // Verify cache stats after error
-        let (num_files, _) = get_cache_stats();
-        // Should not cache failed extractions
-        assert_eq!(num_files, 0);
-    }
 } 

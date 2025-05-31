@@ -10,6 +10,12 @@ use serde_json;
 
 use crate::document_parser::{process_document_with_pages, get_document_page_info, DocumentProcessingResult, DocumentPageInfoResult};
 use crate::streaming_parser::{stream_pdf_to_markdown, stream_excel_to_markdown, StreamingConfig, ProcessingProgress};
+use crate::powerpoint_parser::{
+    process_powerpoint_with_slides, 
+    get_powerpoint_slide_info, 
+    generate_slide_snapshot,
+    SlideSnapshotResult,
+};
 
 /// Office document processor struct that implements the MCP tool interface
 #[derive(Clone)]
@@ -129,10 +135,47 @@ impl From<DocumentPageInfoResult> for DocumentPageInfo {
     }
 }
 
+/// Wrapper for PowerPoint slide snapshot
+pub struct SlideSnapshot {
+    pub slide_number: usize,
+    pub image_data: Option<Vec<u8>>,
+    pub image_format: String,
+    pub error: Option<String>,
+}
+
+impl IntoContents for SlideSnapshot {
+    fn into_contents(self) -> Vec<Content> {
+        if let Some(error) = self.error {
+            vec![Content::text(format!("Slide {}: Error - {}", self.slide_number, error))]
+        } else if let Some(data) = self.image_data {
+            vec![
+                Content::text(format!("Slide {} snapshot ({} format, {} bytes)", 
+                    self.slide_number, self.image_format, data.len())),
+                // Note: In a real implementation, you might want to return the image data
+                // as a base64 encoded string or save it to a file and return the path
+            ]
+        } else {
+            vec![Content::text(format!("Slide {}: No image data available", self.slide_number))]
+        }
+    }
+}
+
+/// Convert SlideSnapshotResult to SlideSnapshot
+impl From<SlideSnapshotResult> for SlideSnapshot {
+    fn from(result: SlideSnapshotResult) -> Self {
+        Self {
+            slide_number: result.slide_number,
+            image_data: result.image_data,
+            image_format: result.image_format,
+            error: result.error,
+        }
+    }
+}
+
 #[tool(tool_box)]
 impl OfficeReader {
     /// Get the page information of an office document without reading the full content
-    #[tool(description = "Get the page information of an office document (Excel, PDF, DOCX) without reading the full content")]
+    #[tool(description = "Get the page information of an office document (Excel, PDF, DOCX, PowerPoint) without reading the full content")]
     pub async fn get_document_page_info(
         &self,
         #[tool(param)]
@@ -144,14 +187,14 @@ impl OfficeReader {
     }
 
     /// Read an office document and return its content as markdown with page selection
-    #[tool(description = "Read an office document (Excel, PDF, DOCX) and return its content as markdown with page selection")]
+    #[tool(description = "Read an office document (Excel, PDF, DOCX, PowerPoint) and return its content as markdown with page/slide selection")]
     pub async fn read_office_document(
         &self,
         #[tool(param)]
         #[schemars(description = "Absolute path to the office document file")]
         file_path: String,
         #[tool(param)]
-        #[schemars(description = "Page selection: integer for single page (e.g., 1), string for ranges/multiple pages (e.g., '1,3,5-7'), or 'all' for all pages")]
+        #[schemars(description = "Page/slide selection: integer for single page (e.g., 1), string for ranges/multiple pages (e.g., '1,3,5-7'), or 'all' for all pages/slides")]
         pages: Option<serde_json::Value>,
     ) -> PageBasedDocumentContent {
         // Convert the pages parameter to a string format that our parser expects
@@ -179,8 +222,95 @@ impl OfficeReader {
         result.into()
     }
 
+    /// Read a PowerPoint presentation and return its content as markdown with slide selection
+    #[tool(description = "Read a PowerPoint presentation (PPT/PPTX) and return its content as markdown with slide selection")]
+    pub async fn read_powerpoint_slides(
+        &self,
+        #[tool(param)]
+        #[schemars(description = "Absolute path to the PowerPoint file")]
+        file_path: String,
+        #[tool(param)]
+        #[schemars(description = "Slide selection: integer for single slide (e.g., 1), string for ranges/multiple slides (e.g., '1,3,5-7'), or 'all' for all slides")]
+        slides: Option<serde_json::Value>,
+    ) -> PageBasedDocumentContent {
+        // Convert the slides parameter to a string format
+        let slides_str = match slides {
+            Some(serde_json::Value::Number(n)) => {
+                if let Some(slide_num) = n.as_u64() {
+                    Some(slide_num.to_string())
+                } else {
+                    Some("1".to_string())
+                }
+            },
+            Some(serde_json::Value::String(s)) => Some(s),
+            Some(_) => Some("all".to_string()),
+            None => None,
+        };
+        
+        let result = process_powerpoint_with_slides(&file_path, slides_str);
+        
+        // Convert PowerPointProcessingResult to PageBasedDocumentContent
+        if let Some(error) = result.error {
+            PageBasedDocumentContent {
+                content: error,
+                total_pages: None,
+                requested_pages: String::new(),
+                returned_pages: Vec::new(),
+                file_path: result.file_path,
+            }
+        } else {
+            PageBasedDocumentContent {
+                content: result.content,
+                total_pages: result.total_slides,
+                requested_pages: result.requested_slides,
+                returned_pages: result.returned_slides,
+                file_path: result.file_path,
+            }
+        }
+    }
+
+    /// Get PowerPoint slide information without reading the full content
+    #[tool(description = "Get PowerPoint slide information (slide count, etc.) without reading the full content")]
+    pub async fn get_powerpoint_slide_info(
+        &self,
+        #[tool(param)]
+        #[schemars(description = "Absolute path to the PowerPoint file")]
+        file_path: String,
+    ) -> DocumentPageInfo {
+        let result = get_powerpoint_slide_info(&file_path);
+        
+        // Convert PowerPointPageInfoResult to DocumentPageInfo
+        let file_exists = result.file_exists();
+        DocumentPageInfo {
+            file_path: result.file_path,
+            total_pages: result.total_slides,
+            file_exists,
+            error: result.error,
+            page_info: result.slide_info,
+        }
+    }
+
+    /// Generate a snapshot image of a specific PowerPoint slide
+    #[tool(description = "Generate a snapshot image of a specific PowerPoint slide (requires external tools like LibreOffice)")]
+    pub async fn generate_powerpoint_slide_snapshot(
+        &self,
+        #[tool(param)]
+        #[schemars(description = "Absolute path to the PowerPoint file")]
+        file_path: String,
+        #[tool(param)]
+        #[schemars(description = "Slide number to capture (1-based index)")]
+        slide_number: usize,
+        #[tool(param)]
+        #[schemars(description = "Output image format (png, jpg, etc.)")]
+        output_format: Option<String>,
+    ) -> SlideSnapshot {
+        let format = output_format.unwrap_or_else(|| "png".to_string());
+        let result = generate_slide_snapshot(&file_path, slide_number, &format);
+        result.into()
+    }
+
     /// Stream an office document and return its content as markdown in chunks
-    #[tool(description = "Stream an office document (Excel, PDF, DOCX) and return its content as markdown in chunks with progress")]
+    #[tool(description = "Stream an office document (Excel, PDF, DOCX, PowerPoint) and return its content as markdown in chunks with progress")]
     pub async fn stream_office_document(
         &self,
         #[tool(param)]
@@ -292,12 +422,15 @@ impl ServerHandler for OfficeReader {
                 .build(),
             server_info: Implementation::from_build_env(),
             instructions: Some(
-                "This server provides functionality to read and parse office documents (Excel, PDF, DOCX) and return their content as markdown. Available tools:\n\n\
+                "This server provides functionality to read and parse office documents (Excel, PDF, DOCX, PowerPoint) and return their content as markdown. Available tools:\n\n\
                 1. get_document_page_info: Get page information of a document without reading the full content\n\
-                2. read_office_document: Read a document with page selection (e.g., '1,3,5-7' or 'all')\n\
-                3. stream_office_document: Stream document content in chunks with progress tracking\n\n\
-                For Excel files, pages refer to sheets. For PDF files, pages refer to actual pages. For DOCX files, there is only one page.\n\
-                Use get_document_page_info first to see available pages, then use read_office_document with specific page selection.".to_string()
+                2. read_office_document: Read a document with page/slide selection (e.g., '1,3,5-7' or 'all')\n\
+                3. read_powerpoint_slides: Read PowerPoint slides with specific slide selection\n\
+                4. get_powerpoint_slide_info: Get PowerPoint slide information without reading content\n\
+                5. generate_powerpoint_slide_snapshot: Generate image snapshots of PowerPoint slides\n\
+                6. stream_office_document: Stream document content in chunks with progress tracking\n\n\
+                For Excel files, pages refer to sheets. For PDF files, pages refer to actual pages. For DOCX files, there is only one page. For PowerPoint files, pages refer to slides.\n\
+                Use get_document_page_info or get_powerpoint_slide_info first to see available pages/slides, then use the appropriate read function with specific selection.".to_string()
             ),
         }
     }

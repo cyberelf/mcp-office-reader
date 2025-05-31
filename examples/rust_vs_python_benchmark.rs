@@ -1,4 +1,4 @@
-use office_reader_mcp::fast_pdf_extractor::{FastPdfExtractor, PdfBackend};
+use office_reader_mcp::fast_pdf_extractor::FastPdfExtractor;
 use std::time::Instant;
 use std::path::Path;
 

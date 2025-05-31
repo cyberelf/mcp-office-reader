@@ -31,6 +31,9 @@ fn main() {
                     let profile = env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
                     let dll_dest = target_dir.join(&profile).join("pdfium.dll");
                     
+                    if dll_dest.exists() {
+                        return;
+                    }
                     if let Err(e) = fs::copy(source_path, &dll_dest) {
                         println!("cargo:warning=Failed to copy DLL to output directory: {}", e);
                     } else {

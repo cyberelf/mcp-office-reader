@@ -15,6 +15,10 @@ path = "examples/performance_comparison.rs"
 name = "rust_vs_python_benchmark"
 path = "examples/rust_vs_python_benchmark.rs"
 
+[[example]]
+name = "test_powerpoint"
+path = "examples/test_powerpoint.rs"
+
 [dependencies]
 rmcp = { version = "0.1.5", features = ["server"] }
 calamine = "0.26.1"  # For Excel files - using older version to avoid yanked zip dependency
@@ -24,6 +28,8 @@ pdfium-render = { version = "0.8.31", features = ["thread_safe", "image"], optio
 mupdf = { version = "0.5.0", optional = true }  # VERY FAST - MuPDF bindings
 poppler-rs = { version = "0.24.1", optional = true }  # FAST - Poppler bindings
 docx-rs = "0.4.7"  # For DOCX files
+zip = "2.2.0"  # For manual PPTX parsing
+quick-xml = "0.37.1"  # For XML parsing in PPTX files
 anyhow = "1.0.75"  # For error handling
 serde = { version = "1.0.188", features = ["derive"] }
 serde_json = "1.0.107"

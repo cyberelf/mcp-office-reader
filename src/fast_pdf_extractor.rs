@@ -610,7 +610,6 @@ mod tests {
     #[test]
     fn test_get_page_count_invalid_file() {
         // Create a temporary file with invalid PDF content
-        use std::fs::File;
         use std::io::Write;
         use tempfile::NamedTempFile;
         
