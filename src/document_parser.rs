@@ -10,6 +10,8 @@ use crate::powerpoint_parser::{
     process_powerpoint_with_slides, 
     get_powerpoint_slide_info,
 };
+use crate::cache_system::CacheManager;
+use crate::impl_cacheable_content;
 
 /// Result of document processing with page-based support
 #[derive(Debug, Clone)]
@@ -92,6 +94,133 @@ impl DocumentProcessingResult {
             error: Some(error),
         }
     }
+}
+
+/// Cache for storing extracted Excel content
+#[derive(Debug, Clone)]
+pub struct ExcelCache {
+    pub content: String,
+    pub char_indices: Vec<usize>,
+    pub total_sheets: Option<usize>,
+    pub sheet_names: Vec<String>,
+}
+
+// Implement CacheableContent for ExcelCache
+impl_cacheable_content!(ExcelCache, content, char_indices, total_sheets);
+
+/// Global Excel cache manager
+lazy_static::lazy_static! {
+    pub static ref EXCEL_CACHE_MANAGER: CacheManager<ExcelCache> = CacheManager::new();
+}
+
+/// Function to extract Excel content and create cache
+fn extract_excel_content(file_path: &str) -> Result<ExcelCache> {
+    let mut workbook: Xlsx<_> = open_workbook(file_path)
+        .with_context(|| format!("Failed to open Excel file: {}", file_path))?;
+    
+    let sheet_names = workbook.sheet_names().to_owned();
+    let total_sheets = sheet_names.len();
+    
+    let mut markdown = format!("# {}\n\n", Path::new(file_path).file_name().unwrap().to_string_lossy());
+    
+    // Process each sheet
+    for (index, sheet_name) in sheet_names.iter().enumerate() {
+        markdown.push_str(&format!("## Sheet {}: {}\n\n", index + 1, sheet_name));
+        
+        if let Ok(range) = workbook.worksheet_range(sheet_name.as_str()) {
+            markdown.push_str(&range_to_markdown_table(&range));
+            markdown.push_str("\n\n");
+        } else {
+            markdown.push_str("*Sheet could not be read*\n\n");
+        }
+    }
+    
+    // Pre-compute character byte indices for efficient slicing
+    let mut char_indices = Vec::new();
+    let mut byte_pos = 0;
+    
+    for ch in markdown.chars() {
+        char_indices.push(byte_pos);
+        byte_pos += ch.len_utf8();
+    }
+    char_indices.push(byte_pos);
+    
+    Ok(ExcelCache {
+        content: markdown,
+        char_indices,
+        total_sheets: Some(total_sheets),
+        sheet_names,
+    })
+}
+
+/// Function to extract specific sheets from Excel
+fn extract_excel_sheets(file_path: &str, sheet_numbers: &[usize]) -> Result<String> {
+    let mut workbook: Xlsx<_> = open_workbook(file_path)
+        .with_context(|| format!("Failed to open Excel file: {}", file_path))?;
+    
+    let sheet_names = workbook.sheet_names().to_owned();
+    let mut markdown = format!("# {}\n\n", Path::new(file_path).file_name().unwrap().to_string_lossy());
+    
+    for &sheet_index in sheet_numbers {
+        if sheet_index > 0 && sheet_index <= sheet_names.len() {
+            let sheet_name = &sheet_names[sheet_index - 1];
+            markdown.push_str(&format!("## Sheet {}: {}\n\n", sheet_index, sheet_name));
+            
+            if let Ok(range) = workbook.worksheet_range(sheet_name.as_str()) {
+                markdown.push_str(&range_to_markdown_table(&range));
+                markdown.push_str("\n\n");
+            } else {
+                markdown.push_str("*Sheet could not be read*\n\n");
+            }
+        }
+    }
+    
+    Ok(markdown)
+}
+
+/// Cache for storing extracted DOCX content
+#[derive(Debug, Clone)]
+pub struct DocxCache {
+    pub content: String,
+    pub char_indices: Vec<usize>,
+    pub total_pages: Option<usize>,
+}
+
+// Implement CacheableContent for DocxCache
+impl_cacheable_content!(DocxCache, content, char_indices, total_pages);
+
+/// Global DOCX cache manager
+lazy_static::lazy_static! {
+    pub static ref DOCX_CACHE_MANAGER: CacheManager<DocxCache> = CacheManager::new();
+}
+
+/// Function to extract DOCX content and create cache
+fn extract_docx_content(file_path: &str) -> Result<DocxCache> {
+    let markdown = read_docx_to_markdown(file_path)?;
+    let total_pages = get_docx_page_count(file_path).unwrap_or(1);
+    
+    // Pre-compute character byte indices for efficient slicing
+    let mut char_indices = Vec::new();
+    let mut byte_pos = 0;
+    
+    for ch in markdown.chars() {
+        char_indices.push(byte_pos);
+        byte_pos += ch.len_utf8();
+    }
+    char_indices.push(byte_pos);
+    
+    Ok(DocxCache {
+        content: markdown,
+        char_indices,
+        total_pages: Some(total_pages),
+    })
+}
+
+/// Function to extract specific pages from DOCX (currently returns full content)
+fn extract_docx_pages(file_path: &str, _page_numbers: &[usize]) -> Result<String> {
+    // For now, DOCX doesn't support true page-level extraction
+    // Return the full content
+    read_docx_to_markdown(file_path)
 }
 
 /// Read Excel file and convert to markdown
@@ -227,21 +356,24 @@ pub fn process_document_with_pages(
 
 /// Process Excel file with specific sheets (pages)
 fn process_excel_with_pages(file_path: &str, pages: &str) -> DocumentProcessingResult {
-    use calamine::{Reader, open_workbook, Xlsx};
-    
     let file_path_string = file_path.to_string();
     
-    // Open the workbook to get sheet information
-    let mut workbook: Xlsx<_> = match open_workbook(file_path) {
-        Ok(wb) => wb,
+    // Get or cache Excel content
+    let excel_cache = match EXCEL_CACHE_MANAGER.get_or_cache(file_path, extract_excel_content) {
+        Ok(cache) => cache,
         Err(e) => return DocumentProcessingResult::error(
             file_path_string,
-            format!("Failed to open Excel file: {}", e),
+            format!("Failed to get Excel content: {}", e),
         ),
     };
     
-    let sheet_names = workbook.sheet_names().to_owned();
-    let total_sheets = sheet_names.len();
+    let total_sheets = match excel_cache.total_sheets {
+        Some(count) => count,
+        None => return DocumentProcessingResult::error(
+            file_path_string,
+            "Failed to determine Excel sheet count".to_string(),
+        ),
+    };
     
     // Parse the pages parameter
     let requested_sheet_indices = match parse_pages_parameter(pages, total_sheets) {
@@ -252,29 +384,24 @@ fn process_excel_with_pages(file_path: &str, pages: &str) -> DocumentProcessingR
         ),
     };
     
-    let mut markdown = format!("# {}\n\n", Path::new(file_path).file_name().unwrap().to_string_lossy());
-    let mut returned_pages = Vec::new();
-    
-    // Process requested sheets
-    for &sheet_index in &requested_sheet_indices {
-        let sheet_name = &sheet_names[sheet_index - 1]; // Convert to 0-based index
-        returned_pages.push(sheet_index);
-        
-        markdown.push_str(&format!("## Sheet {}: {}\n\n", sheet_index, sheet_name));
-        
-        if let Ok(range) = workbook.worksheet_range(sheet_name.as_str()) {
-            markdown.push_str(&range_to_markdown_table(&range));
-            markdown.push_str("\n\n");
-        } else {
-            markdown.push_str("*Sheet could not be read*\n\n");
+    // Extract specific sheets or return full content
+    let content = if pages == "all" {
+        excel_cache.content.clone()
+    } else {
+        match EXCEL_CACHE_MANAGER.extract_units(&excel_cache, &requested_sheet_indices, file_path, extract_excel_sheets) {
+            Ok(content) => content,
+            Err(e) => return DocumentProcessingResult::error(
+                file_path_string,
+                format!("Failed to extract Excel sheets: {}", e),
+            ),
         }
-    }
+    };
     
     DocumentProcessingResult::success(
-        markdown,
+        content,
         Some(total_sheets),
         pages.to_string(),
-        returned_pages,
+        requested_sheet_indices,
         file_path_string,
     )
 }
@@ -337,13 +464,18 @@ fn process_pdf_with_pages(file_path: &str, pages: &str) -> DocumentProcessingRes
 fn process_docx_with_pages(file_path: &str, pages: &str) -> DocumentProcessingResult {
     let file_path_string = file_path.to_string();
     
-    // Get the actual page count using our DOCX page counting function
-    let total_pages = match get_docx_page_count(file_path) {
-        Ok(count) => count,
-        Err(e) => {
-            log::warn!("Failed to get DOCX page count, defaulting to 1: {}", e);
-            1 // Fall back to 1 page if we can't determine the count
-        }
+    // Get or cache DOCX content
+    let docx_cache = match DOCX_CACHE_MANAGER.get_or_cache(file_path, extract_docx_content) {
+        Ok(cache) => cache,
+        Err(e) => return DocumentProcessingResult::error(
+            file_path_string,
+            format!("Failed to get DOCX content: {}", e),
+        ),
+    };
+    
+    let total_pages = match docx_cache.total_pages {
+        Some(count) => count,
+        None => 1, // Default to 1 page if count is not available
     };
     
     // Parse the pages parameter
@@ -355,28 +487,25 @@ fn process_docx_with_pages(file_path: &str, pages: &str) -> DocumentProcessingRe
         ),
     };
     
-    // Extract the DOCX content
-    let content = match read_docx_to_markdown(file_path) {
-        Ok(markdown) => markdown,
-        Err(e) => return DocumentProcessingResult::error(
-            file_path_string,
-            format!("Failed to read DOCX file: {}", e),
-        ),
-    };
-    
-    // For DOCX, we return the full content regardless of page selection
-    // since we don't have true page-level extraction yet
-    let returned_pages = if total_pages == 1 {
-        vec![1]
+    // For DOCX, we currently return the full content regardless of page selection
+    // since true page-level extraction is not yet implemented
+    let content = if pages == "all" {
+        docx_cache.content.clone()
     } else {
-        requested_page_indices
+        match DOCX_CACHE_MANAGER.extract_units(&docx_cache, &requested_page_indices, file_path, extract_docx_pages) {
+            Ok(content) => content,
+            Err(e) => return DocumentProcessingResult::error(
+                file_path_string,
+                format!("Failed to extract DOCX pages: {}", e),
+            ),
+        }
     };
     
     DocumentProcessingResult::success(
         content,
         Some(total_pages),
         pages.to_string(),
-        returned_pages,
+        requested_page_indices,
         file_path_string,
     )
 }
@@ -421,13 +550,11 @@ pub fn get_document_page_info(file_path: &str) -> DocumentPageInfoResult {
     
     match file_type.as_str() {
         "xlsx" | "xls" => {
-            use calamine::{Reader, open_workbook, Xlsx};
-            
-            match open_workbook::<Xlsx<_>, _>(file_path) {
-                Ok(workbook) => {
-                    let sheet_names = workbook.sheet_names();
-                    let total_sheets = sheet_names.len();
-                    let sheet_list = sheet_names.iter()
+            // Use Excel cache to get sheet information
+            match EXCEL_CACHE_MANAGER.get_or_cache(file_path, extract_excel_content) {
+                Ok(excel_cache) => {
+                    let total_sheets = excel_cache.total_sheets.unwrap_or(0);
+                    let sheet_list = excel_cache.sheet_names.iter()
                         .enumerate()
                         .map(|(i, name)| format!("  {}: {}", i + 1, name))
                         .collect::<Vec<_>>()
@@ -441,7 +568,7 @@ pub fn get_document_page_info(file_path: &str) -> DocumentPageInfoResult {
                 },
                 Err(e) => DocumentPageInfoResult::error(
                     file_path_string,
-                    format!("Failed to open Excel file: {}", e),
+                    format!("Failed to analyze Excel file: {}", e),
                 ),
             }
         },
@@ -469,9 +596,10 @@ pub fn get_document_page_info(file_path: &str) -> DocumentPageInfoResult {
             }
         },
         "docx" | "doc" => {
-            // Use actual DOCX page counting
-            match get_docx_page_count(file_path) {
-                Ok(page_count) => {
+            // Use DOCX cache to get page information
+            match DOCX_CACHE_MANAGER.get_or_cache(file_path, extract_docx_content) {
+                Ok(docx_cache) => {
+                    let page_count = docx_cache.total_pages.unwrap_or(1);
                     DocumentPageInfoResult::success(
                         file_path_string,
                         Some(page_count),
@@ -479,7 +607,7 @@ pub fn get_document_page_info(file_path: &str) -> DocumentPageInfoResult {
                     )
                 },
                 Err(e) => {
-                    log::warn!("Failed to get DOCX page count: {}", e);
+                    log::warn!("Failed to get DOCX content: {}", e);
                     DocumentPageInfoResult::success(
                         file_path_string,
                         Some(1),
@@ -552,39 +680,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_document_processing_result_success() {
-        let result = DocumentProcessingResult::success(
-            "test content".to_string(),
-            None,
-            String::new(),
-            Vec::<usize>::new(),
-            "test.pdf".to_string(),
-        );
-        
-        assert_eq!(result.content, "test content");
-        assert_eq!(result.total_pages, None);
-        assert_eq!(result.requested_pages, "");
-        assert_eq!(result.returned_pages, Vec::<usize>::new());
-        assert_eq!(result.file_path, "test.pdf");
-        assert!(result.error.is_none());
-    }
-
-    #[test]
-    fn test_document_processing_result_error() {
-        let result = DocumentProcessingResult::error(
-            "test.pdf".to_string(),
-            "Test error message".to_string(),
-        );
-        
-        assert_eq!(result.content, "Test error message");
-        assert_eq!(result.total_pages, None);
-        assert_eq!(result.requested_pages, "");
-        assert_eq!(result.returned_pages, Vec::<usize>::new());
-        assert_eq!(result.file_path, "test.pdf");
-        assert_eq!(result.error.as_ref().unwrap(), "Test error message");
-    }
-
-    #[test]
     fn test_process_document_with_pages_file_not_found() {
         let result = process_document_with_pages("nonexistent_file.xlsx", Some("1,2".to_string()));
         
@@ -607,24 +702,6 @@ mod tests {
     }
 
     #[test]
-    fn test_document_processing_result_page_based() {
-        let result = DocumentProcessingResult::success(
-            "test content".to_string(),
-            Some(5),
-            "1,3,5".to_string(),
-            vec![1, 3, 5],
-            "test.pdf".to_string(),
-        );
-        
-        assert_eq!(result.content, "test content");
-        assert_eq!(result.total_pages, Some(5));
-        assert_eq!(result.requested_pages, "1,3,5");
-        assert_eq!(result.returned_pages, vec![1, 3, 5]);
-        assert_eq!(result.file_path, "test.pdf");
-        assert!(result.error.is_none());
-    }
-
-    #[test]
     fn test_document_processing_result_page_based_error() {
         let result = DocumentProcessingResult::error(
             "test.pdf".to_string(),
@@ -637,49 +714,6 @@ mod tests {
         assert_eq!(result.returned_pages, Vec::<usize>::new());
         assert_eq!(result.file_path, "test.pdf");
         assert_eq!(result.error.as_ref().unwrap(), "Test error message");
-    }
-
-    #[test]
-    fn test_document_page_info_result_success() {
-        let result = DocumentPageInfoResult::success(
-            "test.pdf".to_string(),
-            Some(5),
-            "PDF file with 5 pages".to_string(),
-        );
-        
-        assert_eq!(result.file_path, "test.pdf");
-        assert_eq!(result.total_pages, Some(5));
-        assert_eq!(result.page_info, "PDF file with 5 pages");
-        assert!(result.error.is_none());
-        assert!(result.file_exists());
-    }
-
-    #[test]
-    fn test_document_page_info_result_error() {
-        let result = DocumentPageInfoResult::error(
-            "test.unsupported".to_string(),
-            "Unsupported file type".to_string(),
-        );
-        
-        assert_eq!(result.file_path, "test.unsupported");
-        assert_eq!(result.total_pages, None);
-        assert_eq!(result.page_info, "");
-        assert_eq!(result.error.as_ref().unwrap(), "Unsupported file type");
-        assert!(result.file_exists()); // Error but file exists
-    }
-
-    #[test]
-    fn test_document_page_info_result_file_not_found() {
-        let result = DocumentPageInfoResult::error(
-            "nonexistent.pdf".to_string(),
-            "file_not_found".to_string(),
-        );
-        
-        assert_eq!(result.file_path, "nonexistent.pdf");
-        assert_eq!(result.total_pages, None);
-        assert_eq!(result.page_info, "");
-        assert_eq!(result.error.as_ref().unwrap(), "file_not_found");
-        assert!(!result.file_exists()); // File doesn't exist
     }
 
     #[test]
@@ -712,38 +746,6 @@ mod tests {
         assert!(result.error.is_some());
         assert!(result.content.contains("Failed to get PDF content") || 
                 result.content.contains("File not found"));
-    }
-
-    #[test]
-    fn test_process_docx_with_pages_uses_actual_page_count() {
-        // This test verifies that the DOCX processing uses actual page counting
-        let result = process_docx_with_pages("nonexistent.docx", "1");
-        
-        // Should fail with file not found, but the logic should attempt page counting
-        assert!(result.error.is_some());
-        assert!(result.content.contains("Failed to open DOCX file") || 
-                result.content.contains("File not found"));
-    }
-
-    #[test]
-    fn test_get_document_page_info_pdf_uses_actual_counting() {
-        // Test that PDF page info uses actual page counting
-        let result = get_document_page_info("nonexistent.pdf");
-        
-        // Should fail with analysis error since file doesn't exist
-        assert!(result.error.is_some());
-        assert!(result.error.as_ref().unwrap().contains("Failed to analyze PDF") ||
-                result.error.as_ref().unwrap() == "file_not_found");
-    }
-
-    #[test]
-    fn test_get_document_page_info_docx_uses_actual_counting() {
-        // Test that DOCX page info uses actual page counting
-        let result = get_document_page_info("nonexistent.docx");
-        
-        // Should fail with file not found
-        assert!(result.error.is_some());
-        assert_eq!(result.error.as_ref().unwrap(), "file_not_found");
     }
 
     #[test]

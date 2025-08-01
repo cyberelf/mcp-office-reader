@@ -15,6 +15,9 @@ pub use mcp_handler::OfficeReader;
 /// Re-export main functionality
 pub use document_parser::{
     DocumentProcessingResult, 
+    DocumentPageInfoResult,
+    ExcelCache,
+    DocxCache,
     process_document_with_pages, 
     get_document_page_info,
     read_excel_to_markdown,
@@ -25,6 +28,7 @@ pub use document_parser::{
 pub use powerpoint_parser::{
     PowerPointProcessingResult,
     PowerPointPageInfoResult,
+    PowerPointCache,
     SlideSnapshotResult,
     process_powerpoint_with_slides,
     get_powerpoint_slide_info,
@@ -49,7 +53,12 @@ pub use shared_utils::{
     extract_pages_from_cache,
     extract_char_range_from_cache,
     clear_pdf_cache,
+    clear_excel_cache,
+    clear_docx_cache,
+    clear_powerpoint_cache,
+    clear_all_caches,
     get_cache_stats,
+    get_all_cache_stats,
     validate_file_path,
     generate_file_header,
     generate_chunk_header,

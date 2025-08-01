@@ -680,3 +680,186 @@ async fn test_read_document_with_integer_page() {
     // Kill the server process
     service.cancel().await.unwrap();
 }
+
+// Additional functional tests for comprehensive coverage
+
+#[tokio::test]
+async fn test_powerpoint_functionality() {
+    // Test PowerPoint-specific functionality
+    let service = ()
+        .serve(TokioChildProcess::new(
+            Command::new("cargo").arg("run"),
+        ).unwrap())
+        .await.unwrap();
+    
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // List tools to verify PowerPoint tools exist
+    let tools = service.list_tools(Default::default()).await.unwrap();
+    let ppt_tools: Vec<_> = tools.tools.iter()
+        .filter(|t| t.name.contains("powerpoint"))
+        .collect();
+    
+    assert!(!ppt_tools.is_empty(), "PowerPoint tools should be available");
+    
+    // Test get_powerpoint_slide_info with non-existent file
+    let result = service.call_tool(CallToolRequestParam {
+        name: "get_powerpoint_slide_info".into(),
+        arguments: serde_json::json!({
+            "file_path": "nonexistent.pptx"
+        }).as_object().cloned(),
+    }).await.unwrap();
+    
+    assert!(result.is_error.is_some() && !result.is_error.unwrap());
+    let content = result.content[0].as_text().unwrap().text.clone().to_lowercase();
+    assert!(content.contains("file not found"));
+
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_error_handling_robustness() {
+    // Test various error conditions to ensure robust error handling
+    let service = ()
+        .serve(TokioChildProcess::new(
+            Command::new("cargo").arg("run"),
+        ).unwrap())
+        .await.unwrap();
+    
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // Test with empty file path
+    let result = service.call_tool(CallToolRequestParam {
+        name: "read_office_document".into(),
+        arguments: serde_json::json!({
+            "file_path": ""
+        }).as_object().cloned(),
+    }).await.unwrap();
+    
+    assert!(result.is_error.is_some() && !result.is_error.unwrap());
+    
+    // Test with invalid JSON in pages parameter
+    let result = service.call_tool(CallToolRequestParam {
+        name: "read_office_document".into(),
+        arguments: serde_json::json!({
+            "file_path": "test.xlsx",
+            "pages": null
+        }).as_object().cloned(),
+    }).await.unwrap();
+    
+    assert!(result.is_error.is_some() && !result.is_error.unwrap());
+
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_concurrent_requests() {
+    // Test handling multiple concurrent requests
+    let service = ()
+        .serve(TokioChildProcess::new(
+            Command::new("cargo").arg("run"),
+        ).unwrap())
+        .await.unwrap();
+    
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // Create multiple concurrent requests
+    let file_path = Path::new("tests").join("test.xlsx");
+    let file_path = file_path.to_str().unwrap().to_string();
+    
+    let mut handles = vec![];
+    
+    for i in 0..3 {
+        let service_clone = service.clone();
+        let file_path_clone = file_path.clone();
+        
+        let handle = tokio::spawn(async move {
+            let result = service_clone.call_tool(CallToolRequestParam {
+                name: "get_document_page_info".into(),
+                arguments: serde_json::json!({
+                    "file_path": file_path_clone
+                }).as_object().cloned(),
+            }).await;
+            
+            println!("Concurrent request {} result: {:?}", i, result);
+            result
+        });
+        
+        handles.push(handle);
+    }
+    
+    // Wait for all requests to complete
+    for handle in handles {
+        let result = handle.await.unwrap().unwrap();
+        assert!(result.is_error.is_some() && !result.is_error.unwrap());
+    }
+
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_large_document_handling() {
+    // Test handling of larger documents through streaming
+    let service = ()
+        .serve(TokioChildProcess::new(
+            Command::new("cargo").arg("run"),
+        ).unwrap())
+        .await.unwrap();
+    
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let file_path = Path::new("tests").join("test.xlsx");
+    let file_path = file_path.to_str().unwrap().to_string();
+    
+    // Test with very small chunk size to simulate large document
+    let result = service.call_tool(CallToolRequestParam {
+        name: "stream_office_document".into(),
+        arguments: serde_json::json!({
+            "file_path": file_path,
+            "chunk_size": 100  // Very small chunk size
+        }).as_object().cloned(),
+    }).await.unwrap();
+    
+    assert!(result.is_error.is_some() && !result.is_error.unwrap());
+    
+    let content = result.content[0].as_text().unwrap().text.clone();
+    assert!(content.contains("current_page") || content.contains("chunk"));
+
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_tool_discovery_and_metadata() {
+    // Test that all expected tools are available with proper metadata
+    let service = ()
+        .serve(TokioChildProcess::new(
+            Command::new("cargo").arg("run"),
+        ).unwrap())
+        .await.unwrap();
+    
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let tools = service.list_tools(Default::default()).await.unwrap();
+    
+    // Expected tools
+    let expected_tools = vec![
+        "get_document_page_info",
+        "read_office_document", 
+        "stream_office_document",
+        "read_powerpoint_slides",
+        "get_powerpoint_slide_info",
+        "generate_powerpoint_slide_snapshot"
+    ];
+    
+    for expected_tool in expected_tools {
+        let tool = tools.tools.iter().find(|t| t.name == expected_tool);
+        assert!(tool.is_some(), "Tool {} should be available", expected_tool);
+        
+        let tool = tool.unwrap();
+        assert!(!tool.description.is_empty(), "Tool {} should have a description", expected_tool);
+        // Check that the tool has some input schema defined
+        assert!(!tool.input_schema.is_empty(), "Tool {} should have input schema", expected_tool);
+    }
+
+    service.cancel().await.unwrap();
+}

@@ -19,6 +19,10 @@ path = "examples/rust_vs_python_benchmark.rs"
 name = "test_powerpoint"
 path = "examples/test_powerpoint.rs"
 
+[[example]]
+name = "test_powerpoint_snapshot"
+path = "examples/test_powerpoint_snapshot.rs"
+
 [dependencies]
 rmcp = { version = "0.1.5", features = ["server"] }
 calamine = "0.26.1"  # For Excel files - using older version to avoid yanked zip dependency
@@ -30,6 +34,10 @@ poppler-rs = { version = "0.24.1", optional = true }  # FAST - Poppler bindings
 docx-rs = "0.4.7"  # For DOCX files
 zip = "2.2.0"  # For manual PPTX parsing
 quick-xml = "0.37.1"  # For XML parsing in PPTX files
+image = "0.25.2"  # For image format conversion and manipulation
+resvg = "0.45.1"  # SVG rendering to raster images
+tiny-skia = "0.11.4"  # 2D graphics library for rendering
+fontdb = "0.21.0"  # Font database for text rendering
 anyhow = "1.0.75"  # For error handling
 serde = { version = "1.0.188", features = ["derive"] }
 serde_json = "1.0.107"
@@ -38,6 +46,8 @@ futures = "0.3.30"  # For streaming support
 tokio-stream = "0.1.15"  # For async streaming
 lazy_static = "1.4.0"  # For global PDF cache
 log = "0.4.22"  # For logging
+base64 = "0.22.1"  # For embedded image handling
+regex = "1.10.2"  # For text processing
 
 [dev-dependencies]
 serde_json = "1.0.107"

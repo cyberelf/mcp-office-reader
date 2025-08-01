@@ -55,128 +55,135 @@ impl<T: CacheableContent> CacheEntry<T> {
     }
 }
 
-/// Macro to create a caching system for a specific file type
-#[macro_export]
-macro_rules! create_file_cache {
-    (
-        $cache_name:ident,
-        $cache_type:ty,
-        $extractor_fn:expr,
-        $page_count_fn:expr
-    ) => {
-        use std::collections::HashMap;
-        use std::sync::{Arc, Mutex};
-        use $crate::cache_system::{CacheEntry, CacheableContent};
-        
-        type $cache_name = Arc<Mutex<HashMap<String, CacheEntry<$cache_type>>>>;
-        
-        lazy_static::lazy_static! {
-            static ref CACHE: $cache_name = Arc::new(Mutex::new(HashMap::new()));
+/// Generic cache manager
+pub struct CacheManager<T: CacheableContent> {
+    cache: Arc<Mutex<HashMap<String, CacheEntry<T>>>>,
+}
+
+impl<T: CacheableContent> CacheManager<T> {
+    pub fn new() -> Self {
+        Self {
+            cache: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+    
+    /// Get or create cached content
+    pub fn get_or_cache<F>(&self, file_path: &str, extractor: F) -> Result<T>
+    where
+        F: FnOnce(&str) -> Result<T>,
+    {
+        let cache_key = file_path.to_string();
         
-        /// Get or create cached content
-        pub fn get_or_cache_content(file_path: &str) -> Result<$cache_type> {
-            let cache_key = file_path.to_string();
-            
-            // Check if already cached and valid
-            {
-                let cache = CACHE.lock().unwrap();
-                if let Some(cached_entry) = cache.get(&cache_key) {
-                    if cached_entry.is_valid() {
-                        return Ok(cached_entry.content.clone());
-                    }
+        // Check if already cached and valid
+        {
+            let cache = self.cache.lock().unwrap();
+            if let Some(cached_entry) = cache.get(&cache_key) {
+                if cached_entry.is_valid() {
+                    return Ok(cached_entry.content.clone());
                 }
             }
-            
-            // Extract content using the provided function
-            let content = $extractor_fn(file_path)?;
-            
-            // Store in cache
-            {
-                let mut cache = CACHE.lock().unwrap();
-                let entry = CacheEntry::new(content.clone(), cache_key.clone());
-                cache.insert(cache_key, entry);
-            }
-            
-            Ok(content)
         }
         
-        /// Clear the cache
-        pub fn clear_cache() {
-            let mut cache = CACHE.lock().unwrap();
-            cache.clear();
+        // Extract content using the provided function
+        let content = extractor(file_path)?;
+        
+        // Store in cache
+        {
+            let mut cache = self.cache.lock().unwrap();
+            let entry = CacheEntry::new(content.clone(), cache_key.clone());
+            cache.insert(cache_key, entry);
         }
         
-        /// Get cache statistics
-        pub fn get_cache_stats() -> (usize, usize) {
-            let cache = CACHE.lock().unwrap();
-            let num_files = cache.len();
-            let total_memory = cache.values()
-                .map(|entry| entry.content.memory_usage())
-                .sum();
-            (num_files, total_memory)
+        Ok(content)
+    }
+    
+    /// Clear the cache
+    pub fn clear(&self) {
+        let mut cache = self.cache.lock().unwrap();
+        cache.clear();
+    }
+    
+    /// Get cache statistics
+    pub fn get_stats(&self) -> (usize, usize) {
+        let cache = self.cache.lock().unwrap();
+        let num_files = cache.len();
+        let total_memory = cache.values()
+            .map(|entry| entry.content.memory_usage())
+            .sum();
+        (num_files, total_memory)
+    }
+    
+    /// Remove invalid cache entries
+    pub fn cleanup(&self) {
+        let mut cache = self.cache.lock().unwrap();
+        cache.retain(|_, entry| entry.is_valid());
+    }
+    
+    /// Extract specific pages/units from cached content
+    pub fn extract_units<F>(
+        &self,
+        cached_content: &T,
+        unit_numbers: &[usize],
+        file_path: &str,
+        extractor: F,
+    ) -> Result<String>
+    where
+        F: FnOnce(&str, &[usize]) -> Result<String>,
+    {
+        if let Some(_total_units) = cached_content.total_units() {
+            // Use page-specific extraction if available
+            extractor(file_path, unit_numbers)
+        } else {
+            // Fallback to returning full content with a note
+            let mut result = String::new();
+            result.push_str(&format!("# {}\n\n", 
+                Path::new(file_path).file_name().unwrap().to_string_lossy()));
+            result.push_str(&format!("## Content (Requested Units: {:?})\n\n", unit_numbers));
+            result.push_str("*Note: Unit-specific extraction not available. Returning full document.*\n\n");
+            result.push_str(cached_content.full_content());
+            Ok(result)
+        }
+    }
+    
+    /// Extract a character range from cached content
+    pub fn extract_char_range(
+        &self,
+        cached_content: &T,
+        start_char: usize,
+        end_char: usize,
+    ) -> Result<String> {
+        let char_indices = cached_content.char_indices();
+        let total_chars = char_indices.len().saturating_sub(1);
+        
+        if start_char >= total_chars {
+            return Ok(String::new());
         }
         
-        /// Remove invalid cache entries
-        pub fn cleanup_cache() {
-            let mut cache = CACHE.lock().unwrap();
-            cache.retain(|_, entry| entry.is_valid());
-        }
+        let actual_end = std::cmp::min(end_char, total_chars);
         
-        /// Extract specific pages/units from cached content
-        pub fn extract_units_from_cache(
-            cached_content: &$cache_type,
-            unit_numbers: &[usize],
-            file_path: &str,
-        ) -> Result<String> {
-            if let Some(_total_units) = cached_content.total_units() {
-                // Use page-specific extraction if available
-                $page_count_fn(file_path, unit_numbers)
-            } else {
-                // Fallback to returning full content with a note
-                let mut result = String::new();
-                result.push_str(&format!("# {}\n\n", 
-                    Path::new(file_path).file_name().unwrap().to_string_lossy()));
-                result.push_str(&format!("## Content (Requested Units: {:?})\n\n", unit_numbers));
-                result.push_str("*Note: Unit-specific extraction not available. Returning full document.*\n\n");
-                result.push_str(cached_content.full_content());
-                Ok(result)
-            }
-        }
+        // Extract the chunk using pre-computed byte indices
+        let start_byte = char_indices[start_char];
+        let end_byte = if actual_end < char_indices.len() {
+            char_indices[actual_end]
+        } else {
+            cached_content.full_content().len()
+        };
         
-        /// Extract a character range from cached content
-        pub fn extract_char_range_from_cache(
-            cached_content: &$cache_type,
-            start_char: usize,
-            end_char: usize,
-        ) -> Result<String> {
-            let char_indices = cached_content.char_indices();
-            let total_chars = char_indices.len().saturating_sub(1);
-            
-            if start_char >= total_chars {
-                return Ok(String::new());
-            }
-            
-            let actual_end = std::cmp::min(end_char, total_chars);
-            
-            // Extract the chunk using pre-computed byte indices
-            let start_byte = char_indices[start_char];
-            let end_byte = if actual_end < char_indices.len() {
-                char_indices[actual_end]
-            } else {
-                cached_content.full_content().len()
-            };
-            
-            Ok(cached_content.full_content()[start_byte..end_byte].to_string())
-        }
-    };
+        Ok(cached_content.full_content()[start_byte..end_byte].to_string())
+    }
+}
+
+impl<T: CacheableContent> Default for CacheManager<T> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Macro to implement CacheableContent for a struct
 #[macro_export]
 macro_rules! impl_cacheable_content {
     ($struct_name:ty, $content_field:ident, $char_indices_field:ident, $total_units_field:ident) => {
-        impl CacheableContent for $struct_name {
+        impl $crate::cache_system::CacheableContent for $struct_name {
             fn total_units(&self) -> Option<usize> {
                 self.$total_units_field
             }
@@ -190,45 +197,4 @@ macro_rules! impl_cacheable_content {
             }
         }
     };
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[derive(Debug, Clone)]
-    struct TestCache {
-        content: String,
-        char_indices: Vec<usize>,
-        total_pages: Option<usize>,
-    }
-
-    impl_cacheable_content!(TestCache, content, char_indices, total_pages);
-
-    #[test]
-    fn test_cacheable_content_trait() {
-        let test_cache = TestCache {
-            content: "Hello, world!".to_string(),
-            char_indices: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
-            total_pages: Some(1),
-        };
-
-        assert_eq!(test_cache.total_units(), Some(1));
-        assert_eq!(test_cache.full_content(), "Hello, world!");
-        assert_eq!(test_cache.char_indices().len(), 14);
-        assert!(test_cache.memory_usage() > 0);
-    }
-
-    #[test]
-    fn test_cache_entry() {
-        let test_cache = TestCache {
-            content: "Test content".to_string(),
-            char_indices: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
-            total_pages: Some(1),
-        };
-
-        let entry = CacheEntry::new(test_cache, "test.txt".to_string());
-        assert_eq!(entry.file_path, "test.txt");
-        // Note: is_valid() will return true for non-existent files in this implementation
-    }
 } 

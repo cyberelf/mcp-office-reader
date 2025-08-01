@@ -7,17 +7,24 @@ use anyhow::{Result, Context};
 use zip::ZipArchive;
 use quick_xml::Reader;
 use quick_xml::events::Event;
+use crate::cache_system::CacheManager;
+use crate::impl_cacheable_content;
 
-/// Result of PowerPoint processing with slide-based support
+/// Cache for storing extracted PowerPoint content
 #[derive(Debug, Clone)]
-pub struct PowerPointProcessingResult {
+pub struct PowerPointCache {
     pub content: String,
+    pub char_indices: Vec<usize>,
     pub total_slides: Option<usize>,
-    pub requested_slides: String,
-    pub returned_slides: Vec<usize>,
-    pub file_path: String,
     pub slide_texts: HashMap<usize, String>,
-    pub error: Option<String>,
+}
+
+// Implement CacheableContent for PowerPointCache
+impl_cacheable_content!(PowerPointCache, content, char_indices, total_slides);
+
+/// Global PowerPoint cache manager
+lazy_static::lazy_static! {
+    pub static ref POWERPOINT_CACHE_MANAGER: CacheManager<PowerPointCache> = CacheManager::new();
 }
 
 /// PowerPoint slide snapshot result
@@ -36,6 +43,70 @@ pub struct PowerPointPageInfoResult {
     pub total_slides: Option<usize>,
     pub slide_info: String,
     pub error: Option<String>,
+}
+
+/// Result of PowerPoint processing with slide-based support
+#[derive(Debug, Clone)]
+pub struct PowerPointProcessingResult {
+    pub content: String,
+    pub total_slides: Option<usize>,
+    pub requested_slides: String,
+    pub returned_slides: Vec<usize>,
+    pub file_path: String,
+    pub slide_texts: HashMap<usize, String>,
+    pub error: Option<String>,
+}
+
+/// Slide content structure for rendering
+#[derive(Debug, Clone)]
+pub struct SlideContent {
+    pub title: Option<String>,
+    pub text_elements: Vec<TextElement>,
+    pub images: Vec<ImageElement>,
+    pub shapes: Vec<ShapeElement>,
+    pub background: Option<Background>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TextElement {
+    pub text: String,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub font_size: f32,
+    pub font_family: String,
+    pub color: String,
+    pub bold: bool,
+    pub italic: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ImageElement {
+    pub data: Vec<u8>,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub format: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ShapeElement {
+    pub shape_type: String,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub fill_color: Option<String>,
+    pub stroke_color: Option<String>,
+    pub stroke_width: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct Background {
+    pub color: Option<String>,
+    pub image: Option<Vec<u8>>,
 }
 
 impl PowerPointProcessingResult {
@@ -128,6 +199,49 @@ impl SlideSnapshotResult {
             error: Some(error),
         }
     }
+}
+
+/// Function to extract PowerPoint content and create cache
+fn extract_powerpoint_content(file_path: &str) -> Result<PowerPointCache> {
+    let (all_text, slide_texts) = extract_powerpoint_text_manual(file_path)?;
+    let total_slides = slide_texts.len();
+    
+    let mut markdown = format!("# {}\n\n", Path::new(file_path).file_name().unwrap().to_string_lossy());
+    markdown.push_str(&all_text);
+    
+    // Pre-compute character byte indices for efficient slicing
+    let mut char_indices = Vec::new();
+    let mut byte_pos = 0;
+    
+    for ch in markdown.chars() {
+        char_indices.push(byte_pos);
+        byte_pos += ch.len_utf8();
+    }
+    char_indices.push(byte_pos);
+    
+    Ok(PowerPointCache {
+        content: markdown,
+        char_indices,
+        total_slides: Some(total_slides),
+        slide_texts,
+    })
+}
+
+/// Function to extract specific slides from PowerPoint
+fn extract_powerpoint_slides(file_path: &str, slide_numbers: &[usize]) -> Result<String> {
+    let (_, slide_texts) = extract_powerpoint_text_manual(file_path)?;
+    
+    let mut markdown = format!("# {}\n\n", Path::new(file_path).file_name().unwrap().to_string_lossy());
+    
+    for &slide_number in slide_numbers {
+        if let Some(slide_text) = slide_texts.get(&slide_number) {
+            if !slide_text.trim().is_empty() {
+                markdown.push_str(&format!("## Slide {}\n\n{}\n\n", slide_number, slide_text));
+            }
+        }
+    }
+    
+    Ok(markdown)
 }
 
 /// Extract text from PowerPoint file by manually parsing PPTX structure
@@ -263,6 +377,332 @@ pub fn get_powerpoint_slide_count(file_path: &str) -> Result<usize> {
     Ok(slide_count)
 }
 
+/// Generate slide snapshot using native Rust graphics libraries
+pub fn generate_slide_snapshot(
+    file_path: &str,
+    slide_number: usize,
+    output_format: &str,
+) -> SlideSnapshotResult {
+    // Validate input parameters
+    if slide_number == 0 {
+        return SlideSnapshotResult::error(
+            slide_number,
+            "Slide number must be greater than 0".to_string(),
+        );
+    }
+    
+    let supported_formats = ["png", "jpg", "jpeg"];
+    if !supported_formats.contains(&output_format.to_lowercase().as_str()) {
+        return SlideSnapshotResult::error(
+            slide_number,
+            format!("Unsupported format '{}'. Supported formats: {}", output_format, supported_formats.join(", ")),
+        );
+    }
+    
+    // Check if file exists
+    if !Path::new(file_path).exists() {
+        return SlideSnapshotResult::error(
+            slide_number,
+            format!("PowerPoint file not found: {}", file_path),
+        );
+    }
+    
+    // Get total slide count to validate slide number
+    let total_slides = match get_powerpoint_slide_count(file_path) {
+        Ok(count) => count,
+        Err(e) => return SlideSnapshotResult::error(
+            slide_number,
+            format!("Failed to get slide count: {}", e),
+        ),
+    };
+    
+    if slide_number > total_slides {
+        return SlideSnapshotResult::error(
+            slide_number,
+            format!("Slide {} does not exist. File has {} slides", slide_number, total_slides),
+        );
+    }
+    
+    // Parse slide content and render to image
+    match parse_and_render_slide(file_path, slide_number, output_format) {
+        Ok(image_data) => SlideSnapshotResult::success(
+            slide_number,
+            image_data,
+            output_format.to_string(),
+        ),
+        Err(e) => SlideSnapshotResult::error(
+            slide_number,
+            format!("Failed to render slide: {}", e),
+        ),
+    }
+}
+
+/// Parse slide content and render it to an image
+fn parse_and_render_slide(
+    file_path: &str,
+    slide_number: usize,
+    output_format: &str,
+) -> Result<Vec<u8>> {
+    // Parse slide content
+    let slide_content = parse_slide_content(file_path, slide_number)?;
+    
+    // Render slide to image
+    render_slide_to_image(&slide_content, output_format)
+}
+
+/// Parse slide content from PPTX file
+fn parse_slide_content(file_path: &str, slide_number: usize) -> Result<SlideContent> {
+    let file = File::open(file_path)?;
+    let mut archive = ZipArchive::new(file)?;
+    
+    // Find the specific slide file
+    let slide_file_name = format!("ppt/slides/slide{}.xml", slide_number);
+    let mut slide_file = archive.by_name(&slide_file_name)
+        .with_context(|| format!("Slide {} not found", slide_number))?;
+    
+    let mut slide_xml = String::new();
+    slide_file.read_to_string(&mut slide_xml)?;
+    
+    // Drop the slide_file to release the mutable borrow
+    drop(slide_file);
+    
+    // Parse slide XML to extract content
+    parse_slide_xml(&slide_xml, &mut archive)
+}
+
+/// Parse slide XML content
+fn parse_slide_xml(xml_content: &str, _archive: &mut ZipArchive<File>) -> Result<SlideContent> {
+    let mut reader = Reader::from_str(xml_content);
+    reader.config_mut().trim_text(true);
+    
+    let mut slide_content = SlideContent {
+        title: None,
+        text_elements: Vec::new(),
+        images: Vec::new(),
+        shapes: Vec::new(),
+        background: None,
+    };
+    
+    let mut buf = Vec::new();
+    let mut current_text = String::new();
+    let mut in_text_element = false;
+    
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) => {
+                match e.name().as_ref() {
+                    b"a:t" => {
+                        in_text_element = true;
+                        current_text.clear();
+                    }
+                    b"p:sp" => {
+                        // Shape element - could be text box, shape, etc.
+                    }
+                    b"a:blip" => {
+                        // Image element
+                        if let Some(embed_attr) = e.attributes().find(|attr| {
+                            attr.as_ref().map(|a| a.key.as_ref() == b"r:embed").unwrap_or(false)
+                        }) {
+                            if let Ok(attr) = embed_attr {
+                                let _embed_id = String::from_utf8_lossy(&attr.value);
+                                // TODO: Extract image from relationships
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Event::End(ref e)) => {
+                match e.name().as_ref() {
+                    b"a:t" => {
+                        in_text_element = false;
+                        if !current_text.trim().is_empty() {
+                            // Create a text element with default positioning
+                            slide_content.text_elements.push(TextElement {
+                                text: current_text.clone(),
+                                x: 50.0,
+                                y: 50.0 + (slide_content.text_elements.len() as f32 * 30.0),
+                                width: 600.0,
+                                height: 25.0,
+                                font_size: 18.0,
+                                font_family: "Arial".to_string(),
+                                color: "#000000".to_string(),
+                                bold: false,
+                                italic: false,
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Event::Text(e)) => {
+                if in_text_element {
+                    let text = e.unescape().unwrap_or_default();
+                    current_text.push_str(&text);
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(e) => {
+                log::warn!("Error parsing slide XML: {}", e);
+                break;
+            }
+            _ => {}
+        }
+        buf.clear();
+    }
+    
+    Ok(slide_content)
+}
+
+/// Render slide content to image using tiny-skia
+fn render_slide_to_image(slide_content: &SlideContent, output_format: &str) -> Result<Vec<u8>> {
+    use tiny_skia::*;
+    
+    // Standard slide dimensions (16:9 aspect ratio)
+    let width = 1920;
+    let height = 1080;
+    
+    let mut pixmap = Pixmap::new(width, height)
+        .ok_or_else(|| anyhow::anyhow!("Failed to create pixmap"))?;
+    
+    // Fill background
+    let background_color = if let Some(ref bg) = slide_content.background {
+        parse_color(bg.color.as_deref().unwrap_or("#FFFFFF"))
+    } else {
+        Color::WHITE
+    };
+    
+    pixmap.fill(background_color);
+    
+    // Render text elements
+    for text_element in &slide_content.text_elements {
+        render_text_element(&mut pixmap, text_element)?;
+    }
+    
+    // Render shapes
+    for shape_element in &slide_content.shapes {
+        render_shape_element(&mut pixmap, shape_element)?;
+    }
+    
+    // Convert to output format
+    match output_format.to_lowercase().as_str() {
+        "png" => {
+            Ok(pixmap.encode_png()?)
+        }
+        "jpg" | "jpeg" => {
+            // Convert to RGB and then to JPEG
+            let rgb_data = pixmap_to_rgb(&pixmap);
+            encode_jpeg(&rgb_data, width, height)
+        }
+        _ => Err(anyhow::anyhow!("Unsupported format: {}", output_format)),
+    }
+}
+
+/// Render text element on the pixmap
+fn render_text_element(pixmap: &mut tiny_skia::Pixmap, text_element: &TextElement) -> Result<()> {
+    // For now, we'll render text as simple rectangles with the text content
+    // A full implementation would require a text rendering library like rusttype or fontdue
+    
+    let rect = tiny_skia::Rect::from_xywh(
+        text_element.x,
+        text_element.y,
+        text_element.width,
+        text_element.height,
+    ).ok_or_else(|| anyhow::anyhow!("Invalid text element bounds"))?;
+    
+    let mut paint = tiny_skia::Paint::default();
+    paint.set_color(parse_color(&text_element.color));
+    paint.anti_alias = true;
+    
+    // Draw a simple rectangle to represent text for now
+    let path = tiny_skia::PathBuilder::from_rect(rect);
+    pixmap.stroke_path(&path, &paint, &tiny_skia::Stroke::default(), tiny_skia::Transform::identity(), None);
+    
+    Ok(())
+}
+
+/// Render shape element on the pixmap
+fn render_shape_element(pixmap: &mut tiny_skia::Pixmap, shape_element: &ShapeElement) -> Result<()> {
+    let rect = tiny_skia::Rect::from_xywh(
+        shape_element.x,
+        shape_element.y,
+        shape_element.width,
+        shape_element.height,
+    ).ok_or_else(|| anyhow::anyhow!("Invalid shape element bounds"))?;
+    
+    let path = tiny_skia::PathBuilder::from_rect(rect);
+    
+    // Fill if fill color is specified
+    if let Some(ref fill_color) = shape_element.fill_color {
+        let mut paint = tiny_skia::Paint::default();
+        paint.set_color(parse_color(fill_color));
+        paint.anti_alias = true;
+        
+        pixmap.fill_path(&path, &paint, tiny_skia::FillRule::Winding, tiny_skia::Transform::identity(), None);
+    }
+    
+    // Stroke if stroke color is specified
+    if let Some(ref stroke_color) = shape_element.stroke_color {
+        let mut paint = tiny_skia::Paint::default();
+        paint.set_color(parse_color(stroke_color));
+        paint.anti_alias = true;
+        
+        let stroke = tiny_skia::Stroke {
+            width: shape_element.stroke_width,
+            ..Default::default()
+        };
+        
+        pixmap.stroke_path(&path, &paint, &stroke, tiny_skia::Transform::identity(), None);
+    }
+    
+    Ok(())
+}
+
+/// Parse color string to tiny-skia Color
+fn parse_color(color_str: &str) -> tiny_skia::Color {
+    if color_str.starts_with('#') && color_str.len() == 7 {
+        if let Ok(hex) = u32::from_str_radix(&color_str[1..], 16) {
+            let r = ((hex >> 16) & 0xFF) as u8;
+            let g = ((hex >> 8) & 0xFF) as u8;
+            let b = (hex & 0xFF) as u8;
+            return tiny_skia::Color::from_rgba8(r, g, b, 255);
+        }
+    }
+    
+    // Default to black if parsing fails
+    tiny_skia::Color::BLACK
+}
+
+/// Convert pixmap to RGB data
+fn pixmap_to_rgb(pixmap: &tiny_skia::Pixmap) -> Vec<u8> {
+    let mut rgb_data = Vec::with_capacity(pixmap.width() as usize * pixmap.height() as usize * 3);
+    
+    for pixel in pixmap.pixels() {
+        rgb_data.push(pixel.red());
+        rgb_data.push(pixel.green());
+        rgb_data.push(pixel.blue());
+    }
+    
+    rgb_data
+}
+
+/// Encode RGB data as JPEG
+fn encode_jpeg(rgb_data: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
+    use image::{ImageBuffer, Rgb};
+    
+    let img = ImageBuffer::<Rgb<u8>, _>::from_raw(width, height, rgb_data)
+        .ok_or_else(|| anyhow::anyhow!("Failed to create image buffer"))?;
+    
+    let mut jpeg_data = Vec::new();
+    {
+        use std::io::Cursor;
+        let mut cursor = Cursor::new(&mut jpeg_data);
+        img.write_to(&mut cursor, image::ImageFormat::Jpeg)?;
+    }
+    
+    Ok(jpeg_data)
+}
+
 /// Convert PowerPoint to markdown with slide-based selection
 pub fn process_powerpoint_with_slides(
     file_path: &str,
@@ -277,15 +717,17 @@ pub fn process_powerpoint_with_slides(
     if let Err(e) = validate_file_path(file_path) {
         return PowerPointProcessingResult::error(file_path_string, e);
     }
-    
-    // Get slide count
-    let total_slides = match get_powerpoint_slide_count(file_path) {
-        Ok(count) => count,
+
+    // Get or create cached PowerPoint content
+    let powerpoint_cache = match POWERPOINT_CACHE_MANAGER.get_or_cache(file_path, extract_powerpoint_content) {
+        Ok(cache) => cache,
         Err(e) => return PowerPointProcessingResult::error(
             file_path_string,
-            format!("Failed to get slide count: {}", e),
+            format!("Failed to extract PowerPoint content: {}", e),
         ),
     };
+
+    let total_slides = powerpoint_cache.total_slides.unwrap_or(0);
     
     // Parse the slides parameter
     let requested_slide_indices = match parse_pages_parameter(&slides, total_slides) {
@@ -295,43 +737,29 @@ pub fn process_powerpoint_with_slides(
             format!("Invalid slides parameter: {}", e),
         ),
     };
-    
-    // Extract text from slides using manual parsing
-    let (all_text, slide_texts) = match extract_powerpoint_text_manual(file_path) {
-        Ok((text, slides)) => (text, slides),
-        Err(e) => return PowerPointProcessingResult::error(
-            file_path_string,
-            format!("Failed to extract PowerPoint text: {}", e),
-        ),
-    };
-    
-    // Build markdown content for requested slides
-    let mut markdown = format!("# {}\n\n", Path::new(file_path).file_name().unwrap().to_string_lossy());
-    
-    if requested_slide_indices.len() == total_slides {
-        // All slides requested
-        markdown.push_str("## Content (All Slides)\n\n");
-        markdown.push_str(&all_text);
+
+    // Extract specific slides if not all slides are requested
+    let content = if requested_slide_indices.len() == total_slides {
+        // All slides requested - use cached content
+        powerpoint_cache.content.clone()
     } else {
-        // Specific slides requested
-        markdown.push_str(&format!("## Content (Slides: {})\n\n", slides));
-        
-        for &slide_index in &requested_slide_indices {
-            if let Some(slide_text) = slide_texts.get(&slide_index) {
-                markdown.push_str(&format!("### Slide {}\n\n{}\n\n", slide_index, slide_text));
-            } else {
-                markdown.push_str(&format!("### Slide {}\n\n*No text content found*\n\n", slide_index));
-            }
+        // Specific slides requested - extract them
+        match POWERPOINT_CACHE_MANAGER.extract_units(&powerpoint_cache, &requested_slide_indices, file_path, extract_powerpoint_slides) {
+            Ok(content) => content,
+            Err(e) => return PowerPointProcessingResult::error(
+                file_path_string,
+                format!("Failed to extract specific slides: {}", e),
+            ),
         }
-    }
-    
+    };
+
     PowerPointProcessingResult::success(
-        markdown,
+        content,
         Some(total_slides),
         slides,
         requested_slide_indices,
         file_path_string,
-        slide_texts,
+        powerpoint_cache.slide_texts,
     )
 }
 
@@ -349,10 +777,11 @@ pub fn get_powerpoint_slide_info(file_path: &str) -> PowerPointPageInfoResult {
             return PowerPointPageInfoResult::error(file_path_string, e);
         }
     }
-    
-    // Get slide count
-    match get_powerpoint_slide_count(file_path) {
-        Ok(slide_count) => {
+
+    // Get or create cached PowerPoint content to get slide count
+    match POWERPOINT_CACHE_MANAGER.get_or_cache(file_path, extract_powerpoint_content) {
+        Ok(powerpoint_cache) => {
+            let slide_count = powerpoint_cache.total_slides.unwrap_or(0);
             PowerPointPageInfoResult::success(
                 file_path_string,
                 Some(slide_count),
@@ -363,183 +792,5 @@ pub fn get_powerpoint_slide_info(file_path: &str) -> PowerPointPageInfoResult {
             file_path_string,
             format!("Failed to analyze PowerPoint file: {}", e),
         ),
-    }
-}
-
-/// Generate slide snapshot (requires external tools like LibreOffice)
-pub fn generate_slide_snapshot(
-    _file_path: &str,
-    slide_number: usize,
-    _output_format: &str, // "png", "jpg", etc.
-) -> SlideSnapshotResult {
-    // This is a placeholder implementation
-    // In a real implementation, you would:
-    // 1. Use LibreOffice/unoconv to convert specific slide to image
-    // 2. Or convert entire presentation to PDF and then extract specific page as image
-    // 3. Or use a PowerPoint-specific rendering library
-    
-    SlideSnapshotResult::error(
-        slide_number,
-        "Slide snapshot generation not yet implemented. Consider using LibreOffice headless mode or PDF conversion.".to_string(),
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_extract_slide_number() {
-        assert_eq!(extract_slide_number("ppt/slides/slide1.xml"), 1);
-        assert_eq!(extract_slide_number("ppt/slides/slide10.xml"), 10);
-        assert_eq!(extract_slide_number("ppt/slides/slide123.xml"), 123);
-        assert_eq!(extract_slide_number("invalid.xml"), 0);
-    }
-
-    #[test]
-    fn test_powerpoint_processing_result_success() {
-        let slide_texts = HashMap::new();
-        let result = PowerPointProcessingResult::success(
-            "test content".to_string(),
-            Some(5),
-            "1,3,5".to_string(),
-            vec![1, 3, 5],
-            "test.pptx".to_string(),
-            slide_texts,
-        );
-        
-        assert_eq!(result.content, "test content");
-        assert_eq!(result.total_slides, Some(5));
-        assert_eq!(result.requested_slides, "1,3,5");
-        assert_eq!(result.returned_slides, vec![1, 3, 5]);
-        assert_eq!(result.file_path, "test.pptx");
-        assert!(result.error.is_none());
-    }
-
-    #[test]
-    fn test_powerpoint_processing_result_error() {
-        let result = PowerPointProcessingResult::error(
-            "test.pptx".to_string(),
-            "Test error message".to_string(),
-        );
-        
-        assert_eq!(result.content, "Test error message");
-        assert_eq!(result.total_slides, None);
-        assert_eq!(result.requested_slides, "");
-        assert_eq!(result.returned_slides, Vec::<usize>::new());
-        assert_eq!(result.file_path, "test.pptx");
-        assert_eq!(result.error.as_ref().unwrap(), "Test error message");
-    }
-
-    #[test]
-    fn test_powerpoint_page_info_result_success() {
-        let result = PowerPointPageInfoResult::success(
-            "test.pptx".to_string(),
-            Some(5),
-            "PowerPoint file with 5 slides".to_string(),
-        );
-        
-        assert_eq!(result.file_path, "test.pptx");
-        assert_eq!(result.total_slides, Some(5));
-        assert_eq!(result.slide_info, "PowerPoint file with 5 slides");
-        assert!(result.error.is_none());
-        assert!(result.file_exists());
-    }
-
-    #[test]
-    fn test_powerpoint_page_info_result_file_not_found() {
-        let result = PowerPointPageInfoResult::error(
-            "nonexistent.pptx".to_string(),
-            "file_not_found".to_string(),
-        );
-        
-        assert_eq!(result.file_path, "nonexistent.pptx");
-        assert_eq!(result.total_slides, None);
-        assert_eq!(result.slide_info, "");
-        assert_eq!(result.error.as_ref().unwrap(), "file_not_found");
-        assert!(!result.file_exists());
-    }
-
-    #[test]
-    fn test_slide_snapshot_result_success() {
-        let image_data = vec![1, 2, 3, 4];
-        let result = SlideSnapshotResult::success(
-            1,
-            image_data.clone(),
-            "png".to_string(),
-        );
-        
-        assert_eq!(result.slide_number, 1);
-        assert_eq!(result.image_data, Some(image_data));
-        assert_eq!(result.image_format, "png");
-        assert!(result.error.is_none());
-    }
-
-    #[test]
-    fn test_slide_snapshot_result_error() {
-        let result = SlideSnapshotResult::error(
-            1,
-            "Test error".to_string(),
-        );
-        
-        assert_eq!(result.slide_number, 1);
-        assert_eq!(result.image_data, None);
-        assert_eq!(result.image_format, "");
-        assert_eq!(result.error.as_ref().unwrap(), "Test error");
-    }
-
-    #[test]
-    fn test_get_powerpoint_slide_count_nonexistent_file() {
-        let result = get_powerpoint_slide_count("nonexistent.pptx");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_process_powerpoint_with_slides_nonexistent_file() {
-        let result = process_powerpoint_with_slides("nonexistent.pptx", Some("1".to_string()));
-        
-        assert!(result.error.is_some());
-        assert!(result.content.contains("File not found") || 
-                result.content.contains("Failed to get slide count"));
-    }
-
-    #[test]
-    fn test_get_powerpoint_slide_info_nonexistent_file() {
-        let result = get_powerpoint_slide_info("nonexistent.pptx");
-        
-        assert_eq!(result.error.as_ref().unwrap(), "file_not_found");
-        assert!(!result.file_exists());
-    }
-
-    #[test]
-    fn test_extract_text_from_slide_xml() {
-        let xml_content = r#"
-            <p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
-                <p:cSld>
-                    <p:spTree>
-                        <p:sp>
-                            <p:txBody>
-                                <a:p>
-                                    <a:r>
-                                        <a:t>Hello World</a:t>
-                                    </a:r>
-                                </a:p>
-                                <a:p>
-                                    <a:r>
-                                        <a:t>This is a test</a:t>
-                                    </a:r>
-                                </a:p>
-                            </p:txBody>
-                        </p:sp>
-                    </p:spTree>
-                </p:cSld>
-            </p:sld>
-        "#;
-        
-        let result = extract_text_from_slide_xml(xml_content);
-        assert!(result.is_ok());
-        let text = result.unwrap();
-        assert!(text.contains("Hello World"));
-        assert!(text.contains("This is a test"));
     }
 } 

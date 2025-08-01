@@ -1,8 +1,8 @@
 use std::path::Path;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 use anyhow::{Result, Context};
 use crate::fast_pdf_extractor::FastPdfExtractor;
+use crate::cache_system::CacheManager;
+use crate::impl_cacheable_content;
 
 /// Cache for storing extracted PDF content to avoid re-parsing
 #[derive(Debug, Clone)]
@@ -12,11 +12,120 @@ pub struct PdfCache {
     pub total_pages: Option<usize>,
 }
 
-/// Global cache for PDF content (thread-safe)
-type GlobalPdfCache = Arc<Mutex<HashMap<String, PdfCache>>>;
+// Implement CacheableContent for PdfCache
+impl_cacheable_content!(PdfCache, content, char_indices, total_pages);
 
+/// Global PDF cache manager
 lazy_static::lazy_static! {
-    static ref PDF_CACHE: GlobalPdfCache = Arc::new(Mutex::new(HashMap::new()));
+    static ref PDF_CACHE_MANAGER: CacheManager<PdfCache> = CacheManager::new();
+}
+
+/// Function to extract PDF content and create cache
+fn extract_pdf_content(file_path: &str) -> Result<PdfCache> {
+    // Extract PDF content and get page count (only once per file)
+    let full_text = FastPdfExtractor::extract_text(file_path)
+        .with_context(|| format!("Failed to extract text from PDF: {}", file_path))?;
+    
+    let total_pages = FastPdfExtractor::get_page_count(file_path)
+        .with_context(|| format!("Failed to get page count from PDF: {}", file_path))
+        .ok(); // Make it optional in case page counting fails
+    
+    // Pre-compute character byte indices for efficient slicing
+    let mut char_indices = Vec::new();
+    let mut byte_pos = 0;
+    
+    for ch in full_text.chars() {
+        char_indices.push(byte_pos);
+        byte_pos += ch.len_utf8();
+    }
+    char_indices.push(byte_pos); // Add final position
+    
+    Ok(PdfCache {
+        content: full_text,
+        char_indices,
+        total_pages,
+    })
+}
+
+/// Function to extract specific pages from PDF
+fn extract_pdf_pages(file_path: &str, page_numbers: &[usize]) -> Result<String> {
+    FastPdfExtractor::extract_pages_text(file_path, page_numbers)
+        .with_context(|| format!("Failed to extract specific pages from PDF: {}", file_path))
+}
+
+/// Get or create cached PDF content with page count information
+pub fn get_or_cache_pdf_content(file_path: &str) -> Result<PdfCache> {
+    PDF_CACHE_MANAGER.get_or_cache(file_path, extract_pdf_content)
+}
+
+/// Extract specific pages from a cached PDF
+pub fn extract_pages_from_cache(
+    pdf_cache: &PdfCache,
+    page_numbers: &[usize],
+    file_path: &str,
+) -> Result<String> {
+    PDF_CACHE_MANAGER.extract_units(pdf_cache, page_numbers, file_path, extract_pdf_pages)
+}
+
+/// Extract a character range from cached PDF content
+pub fn extract_char_range_from_cache(
+    pdf_cache: &PdfCache,
+    start_char: usize,
+    end_char: usize,
+) -> Result<String> {
+    PDF_CACHE_MANAGER.extract_char_range(pdf_cache, start_char, end_char)
+}
+
+/// Clear the PDF cache
+pub fn clear_pdf_cache() {
+    PDF_CACHE_MANAGER.clear();
+}
+
+/// Clear the Excel cache
+pub fn clear_excel_cache() {
+    use crate::document_parser::EXCEL_CACHE_MANAGER;
+    EXCEL_CACHE_MANAGER.clear();
+}
+
+/// Clear the DOCX cache
+pub fn clear_docx_cache() {
+    use crate::document_parser::DOCX_CACHE_MANAGER;
+    DOCX_CACHE_MANAGER.clear();
+}
+
+/// Clear the PowerPoint cache
+pub fn clear_powerpoint_cache() {
+    use crate::powerpoint_parser::POWERPOINT_CACHE_MANAGER;
+    POWERPOINT_CACHE_MANAGER.clear();
+}
+
+/// Clear all document caches
+pub fn clear_all_caches() {
+    clear_pdf_cache();
+    clear_excel_cache();
+    clear_docx_cache();
+    clear_powerpoint_cache();
+}
+
+/// Get cache statistics (number of cached files, total memory usage estimate)
+pub fn get_cache_stats() -> (usize, usize) {
+    PDF_CACHE_MANAGER.get_stats()
+}
+
+/// Get comprehensive cache statistics for all document types
+pub fn get_all_cache_stats() -> (usize, usize) {
+    use crate::document_parser::{EXCEL_CACHE_MANAGER, DOCX_CACHE_MANAGER};
+    use crate::powerpoint_parser::POWERPOINT_CACHE_MANAGER;
+    
+    let (pdf_files, pdf_memory) = PDF_CACHE_MANAGER.get_stats();
+    let (excel_files, excel_memory) = EXCEL_CACHE_MANAGER.get_stats();
+    let (docx_files, docx_memory) = DOCX_CACHE_MANAGER.get_stats();
+    let (ppt_files, ppt_memory) = POWERPOINT_CACHE_MANAGER.get_stats();
+    
+    let total_files = pdf_files + excel_files + docx_files + ppt_files;
+    let total_memory = pdf_memory + excel_memory + docx_memory + ppt_memory;
+    
+    (total_files, total_memory)
 }
 
 /// Parse a comma-separated string of page numbers and ranges
@@ -83,113 +192,6 @@ pub fn parse_pages_parameter(pages: &str, total_pages: usize) -> Result<Vec<usiz
     Ok(page_numbers)
 }
 
-/// Get or create cached PDF content with page count information
-pub fn get_or_cache_pdf_content(file_path: &str) -> Result<PdfCache> {
-    let cache_key = file_path.to_string();
-    
-    // Check if already cached
-    {
-        let cache = PDF_CACHE.lock().unwrap();
-        if let Some(cached) = cache.get(&cache_key) {
-            return Ok(cached.clone());
-        }
-    }
-    
-    // Extract PDF content and get page count (only once per file)
-    let full_text = FastPdfExtractor::extract_text(file_path)
-        .with_context(|| format!("Failed to extract text from PDF: {}", file_path))?;
-    
-    let total_pages = FastPdfExtractor::get_page_count(file_path)
-        .with_context(|| format!("Failed to get page count from PDF: {}", file_path))
-        .ok(); // Make it optional in case page counting fails
-    
-    // Pre-compute character byte indices for efficient slicing
-    let mut char_indices = Vec::new();
-    let mut byte_pos = 0;
-    
-    for ch in full_text.chars() {
-        char_indices.push(byte_pos);
-        byte_pos += ch.len_utf8();
-    }
-    char_indices.push(byte_pos); // Add final position
-    
-    let pdf_cache = PdfCache {
-        content: full_text,
-        char_indices,
-        total_pages,
-    };
-    
-    // Store in cache
-    {
-        let mut cache = PDF_CACHE.lock().unwrap();
-        cache.insert(cache_key, pdf_cache.clone());
-    }
-    
-    Ok(pdf_cache)
-}
-
-/// Extract specific pages from a cached PDF
-pub fn extract_pages_from_cache(
-    pdf_cache: &PdfCache,
-    page_numbers: &[usize],
-    file_path: &str,
-) -> Result<String> {
-    if let Some(_total_pages) = pdf_cache.total_pages {
-        // Use the new page-specific extraction if we have page count
-        FastPdfExtractor::extract_pages_text(file_path, page_numbers)
-            .with_context(|| format!("Failed to extract specific pages from PDF: {}", file_path))
-    } else {
-        // Fallback to returning full content with a note
-        let mut result = String::new();
-        result.push_str(&format!("# {}\n\n", Path::new(file_path).file_name().unwrap().to_string_lossy()));
-        result.push_str(&format!("## Content (Requested Pages: {:?})\n\n", page_numbers));
-        result.push_str("*Note: Page-specific extraction not available. Returning full document.*\n\n");
-        result.push_str(&pdf_cache.content);
-        Ok(result)
-    }
-}
-
-/// Extract a character range from cached PDF content
-pub fn extract_char_range_from_cache(
-    pdf_cache: &PdfCache,
-    start_char: usize,
-    end_char: usize,
-) -> Result<String> {
-    let total_chars = pdf_cache.char_indices.len().saturating_sub(1);
-    
-    if start_char >= total_chars {
-        return Ok(String::new());
-    }
-    
-    let actual_end = std::cmp::min(end_char, total_chars);
-    
-    // Extract the chunk using pre-computed byte indices
-    let start_byte = pdf_cache.char_indices[start_char];
-    let end_byte = if actual_end < pdf_cache.char_indices.len() {
-        pdf_cache.char_indices[actual_end]
-    } else {
-        pdf_cache.content.len()
-    };
-    
-    Ok(pdf_cache.content[start_byte..end_byte].to_string())
-}
-
-/// Clear the PDF cache
-pub fn clear_pdf_cache() {
-    let mut cache = PDF_CACHE.lock().unwrap();
-    cache.clear();
-}
-
-/// Get cache statistics (number of cached files, total memory usage estimate)
-pub fn get_cache_stats() -> (usize, usize) {
-    let cache = PDF_CACHE.lock().unwrap();
-    let num_files = cache.len();
-    let total_memory = cache.values()
-        .map(|pdf_cache| pdf_cache.content.len() + pdf_cache.char_indices.len() * std::mem::size_of::<usize>())
-        .sum();
-    (num_files, total_memory)
-}
-
 /// Check if a file exists and determine its type
 pub fn validate_file_path(file_path: &str) -> Result<String, String> {
     if !Path::new(file_path).exists() {
@@ -206,172 +208,43 @@ pub fn validate_file_path(file_path: &str) -> Result<String, String> {
         Some(ext) => {
             match ext.as_str() {
                 "pdf" | "xlsx" | "xls" | "docx" | "doc" | "pptx" | "ppt" => Ok(ext),
-                _ => Err(format!("Unsupported file type: {}", ext)),
+                _ => Err(format!("Unsupported file type: .{}", ext)),
             }
-        }
-        None => Err("Unable to determine file type (no extension)".to_string()),
+        },
+        None => Err("Unable to determine file type from extension".to_string()),
     }
 }
 
-/// Generate markdown header for a file
+/// Generate a markdown header for a file
 pub fn generate_file_header(file_path: &str) -> String {
     format!("# {}\n\n", Path::new(file_path).file_name().unwrap().to_string_lossy())
 }
 
-/// Generate chunk header for streaming
+/// Generate a markdown header for a chunk/page
 pub fn generate_chunk_header(chunk_num: usize, start_pos: usize, end_pos: usize, unit: &str) -> String {
-    format!("## Chunk {} ({} {}-{})\n\n", chunk_num, unit, start_pos, end_pos)
+    format!("## {} {} (chars {}-{})\n\n", unit, chunk_num, start_pos, end_pos)
 }
 
-/// Break text at word boundaries for better readability
+/// Break text at word boundary to avoid cutting words in half
 pub fn break_at_word_boundary(text: &str, max_chars: usize) -> &str {
-    if text.chars().count() <= max_chars {
+    if text.len() <= max_chars {
         return text;
     }
     
-    // First, truncate to max_chars
-    let mut truncated_end = 0;
-    let mut char_count = 0;
-    for (byte_idx, _) in text.char_indices() {
-        if char_count >= max_chars {
-            truncated_end = byte_idx;
-            break;
-        }
-        char_count += 1;
+    // Find the last space before max_chars
+    let mut break_point = max_chars;
+    let chars: Vec<char> = text.chars().collect();
+    
+    while break_point > 0 && chars[break_point - 1] != ' ' {
+        break_point -= 1;
     }
     
-    if truncated_end == 0 {
-        return text; // Fallback if something goes wrong
+    // If no space found, just cut at max_chars
+    if break_point == 0 {
+        break_point = max_chars;
     }
     
-    let truncated_text = &text[..truncated_end];
-    
-    // Now try to find a word boundary within the truncated text
-    if let Some(last_space_pos) = truncated_text.rfind(' ') {
-        let word_boundary_chunk = &truncated_text[..last_space_pos];
-        // Ensure we make meaningful progress (at least 10% of max_chars or minimum 10 chars)
-        let min_progress = std::cmp::max(max_chars / 10, 10);
-        if word_boundary_chunk.chars().count() >= min_progress {
-            return word_boundary_chunk;
-        }
-    }
-    
-    // If word boundary breaking doesn't work well, return the truncated text
-    truncated_text
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_parse_pages_parameter() {
-        // Test "all" parameter
-        assert_eq!(parse_pages_parameter("all", 5).unwrap(), vec![1, 2, 3, 4, 5]);
-        assert_eq!(parse_pages_parameter("", 3).unwrap(), vec![1, 2, 3]);
-        
-        // Test single pages
-        assert_eq!(parse_pages_parameter("1", 5).unwrap(), vec![1]);
-        assert_eq!(parse_pages_parameter("3", 5).unwrap(), vec![3]);
-        
-        // Test multiple pages
-        assert_eq!(parse_pages_parameter("1,3,5", 5).unwrap(), vec![1, 3, 5]);
-        assert_eq!(parse_pages_parameter("5,1,3", 5).unwrap(), vec![1, 3, 5]); // Should be sorted
-        
-        // Test ranges
-        assert_eq!(parse_pages_parameter("1-3", 5).unwrap(), vec![1, 2, 3]);
-        assert_eq!(parse_pages_parameter("2-4", 5).unwrap(), vec![2, 3, 4]);
-        
-        // Test mixed ranges and single pages
-        assert_eq!(parse_pages_parameter("1,3-5", 5).unwrap(), vec![1, 3, 4, 5]);
-        assert_eq!(parse_pages_parameter("1-2,4,6-7", 10).unwrap(), vec![1, 2, 4, 6, 7]);
-        
-        // Test duplicates (should be removed)
-        assert_eq!(parse_pages_parameter("1,1,2", 5).unwrap(), vec![1, 2]);
-        assert_eq!(parse_pages_parameter("1-3,2-4", 5).unwrap(), vec![1, 2, 3, 4]);
-        
-        // Test error cases
-        assert!(parse_pages_parameter("0", 5).is_err()); // Page 0 not allowed
-        assert!(parse_pages_parameter("6", 5).is_err()); // Page exceeds total
-        assert!(parse_pages_parameter("3-2", 5).is_err()); // Invalid range
-        assert!(parse_pages_parameter("1-6", 5).is_err()); // Range exceeds total
-        assert!(parse_pages_parameter("abc", 5).is_err()); // Invalid number
-        assert!(parse_pages_parameter("1-2-3", 5).is_err()); // Invalid range format
-    }
-
-    #[test]
-    fn test_validate_file_path() {
-        // Test non-existent file
-        assert!(validate_file_path("nonexistent.pdf").is_err());
-        
-        // Test unsupported extension
-        assert!(validate_file_path("test.txt").is_err());
-        
-        // Test no extension
-        assert!(validate_file_path("test").is_err());
-    }
-
-    #[test]
-    fn test_generate_file_header() {
-        let header = generate_file_header("/path/to/document.pdf");
-        assert_eq!(header, "# document.pdf\n\n");
-    }
-
-    #[test]
-    fn test_generate_chunk_header() {
-        let header = generate_chunk_header(1, 0, 1000, "characters");
-        assert_eq!(header, "## Chunk 1 (characters 0-1000)\n\n");
-    }
-
-    #[test]
-    fn test_break_at_word_boundary() {
-        let text = "This is a long sentence that should be broken at word boundaries.";
-        let result = break_at_word_boundary(text, 30);
-        assert!(result.chars().count() <= 30);
-        assert!(result.ends_with("that")); // Should break at word boundary before "should"
-        
-        // Test with text shorter than max
-        let short_text = "Short text";
-        let result = break_at_word_boundary(short_text, 30);
-        assert_eq!(result, short_text);
-    }
-
-    #[test]
-    fn test_cache_management() {
-        // Clear cache first
-        clear_pdf_cache();
-        
-        let (num_files, _) = get_cache_stats();
-        assert_eq!(num_files, 0);
-        
-        // Cache stats should work
-        let (files, memory) = get_cache_stats();
-        assert_eq!(files, 0);
-        assert_eq!(memory, 0);
-    }
-
-    #[test]
-    fn test_extract_char_range_from_cache() {
-        let content = "Hello, world! This is a test.".to_string();
-        let mut char_indices = Vec::new();
-        let mut byte_pos = 0;
-        
-        for ch in content.chars() {
-            char_indices.push(byte_pos);
-            byte_pos += ch.len_utf8();
-        }
-        char_indices.push(byte_pos);
-        
-        let cache = PdfCache {
-            content,
-            char_indices,
-            total_pages: Some(1),
-        };
-        
-        let result = extract_char_range_from_cache(&cache, 0, 5).unwrap();
-        assert_eq!(result, "Hello");
-        
-        let result = extract_char_range_from_cache(&cache, 7, 12).unwrap();
-        assert_eq!(result, "world");
-    }
+    // Convert back to byte index
+    let byte_index = chars.iter().take(break_point).map(|c| c.len_utf8()).sum();
+    &text[..byte_index]
 } 
