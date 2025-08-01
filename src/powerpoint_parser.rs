@@ -22,8 +22,9 @@ pub struct PowerPointCache {
 // Implement CacheableContent for PowerPointCache
 impl_cacheable_content!(PowerPointCache, content, char_indices, total_slides);
 
-/// Global PowerPoint cache manager
+
 lazy_static::lazy_static! {
+    /// Global PowerPoint cache manager
     pub static ref POWERPOINT_CACHE_MANAGER: CacheManager<PowerPointCache> = CacheManager::new();
 }
 
@@ -378,8 +379,9 @@ pub fn get_powerpoint_slide_count(file_path: &str) -> Result<usize> {
 }
 
 /// Generate slide snapshot using native Rust graphics libraries
+/// Expects a resolved file path
 pub fn generate_slide_snapshot(
-    file_path: &str,
+    resolved_file_path: &str,
     slide_number: usize,
     output_format: &str,
 ) -> SlideSnapshotResult {
@@ -400,15 +402,15 @@ pub fn generate_slide_snapshot(
     }
     
     // Check if file exists
-    if !Path::new(file_path).exists() {
+    if !Path::new(resolved_file_path).exists() {
         return SlideSnapshotResult::error(
             slide_number,
-            format!("PowerPoint file not found: {}", file_path),
+            format!("PowerPoint file not found: {}", resolved_file_path),
         );
     }
     
     // Get total slide count to validate slide number
-    let total_slides = match get_powerpoint_slide_count(file_path) {
+    let total_slides = match get_powerpoint_slide_count(resolved_file_path) {
         Ok(count) => count,
         Err(e) => return SlideSnapshotResult::error(
             slide_number,
@@ -424,7 +426,7 @@ pub fn generate_slide_snapshot(
     }
     
     // Parse slide content and render to image
-    match parse_and_render_slide(file_path, slide_number, output_format) {
+    match parse_and_render_slide(resolved_file_path, slide_number, output_format) {
         Ok(image_data) => SlideSnapshotResult::success(
             slide_number,
             image_data,
@@ -704,22 +706,23 @@ fn encode_jpeg(rgb_data: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
 }
 
 /// Convert PowerPoint to markdown with slide-based selection
+/// Expects a resolved file path
 pub fn process_powerpoint_with_slides(
-    file_path: &str,
+    resolved_file_path: &str,
     slides: Option<String>,
 ) -> PowerPointProcessingResult {
     use crate::shared_utils::{parse_pages_parameter, validate_file_path};
     
-    let file_path_string = file_path.to_string();
+    let file_path_string = resolved_file_path.to_string();
     let slides = slides.unwrap_or_else(|| "all".to_string());
     
     // Validate file
-    if let Err(e) = validate_file_path(file_path) {
+    if let Err(e) = validate_file_path(resolved_file_path) {
         return PowerPointProcessingResult::error(file_path_string, e);
     }
 
     // Get or create cached PowerPoint content
-    let powerpoint_cache = match POWERPOINT_CACHE_MANAGER.get_or_cache(file_path, extract_powerpoint_content) {
+    let powerpoint_cache = match POWERPOINT_CACHE_MANAGER.get_or_cache(resolved_file_path, extract_powerpoint_content) {
         Ok(cache) => cache,
         Err(e) => return PowerPointProcessingResult::error(
             file_path_string,
@@ -744,7 +747,7 @@ pub fn process_powerpoint_with_slides(
         powerpoint_cache.content.clone()
     } else {
         // Specific slides requested - extract them
-        match POWERPOINT_CACHE_MANAGER.extract_units(&powerpoint_cache, &requested_slide_indices, file_path, extract_powerpoint_slides) {
+        match POWERPOINT_CACHE_MANAGER.extract_units(&powerpoint_cache, &requested_slide_indices, resolved_file_path, extract_powerpoint_slides) {
             Ok(content) => content,
             Err(e) => return PowerPointProcessingResult::error(
                 file_path_string,
@@ -764,13 +767,14 @@ pub fn process_powerpoint_with_slides(
 }
 
 /// Get PowerPoint slide information
-pub fn get_powerpoint_slide_info(file_path: &str) -> PowerPointPageInfoResult {
+/// Expects a resolved file path
+pub fn get_powerpoint_slide_info(resolved_file_path: &str) -> PowerPointPageInfoResult {
     use crate::shared_utils::validate_file_path;
     
-    let file_path_string = file_path.to_string();
+    let file_path_string = resolved_file_path.to_string();
     
     // Validate file
-    if let Err(e) = validate_file_path(file_path) {
+    if let Err(e) = validate_file_path(resolved_file_path) {
         if e.contains("File not found") {
             return PowerPointPageInfoResult::error(file_path_string, "file_not_found".to_string());
         } else {
@@ -779,7 +783,7 @@ pub fn get_powerpoint_slide_info(file_path: &str) -> PowerPointPageInfoResult {
     }
 
     // Get or create cached PowerPoint content to get slide count
-    match POWERPOINT_CACHE_MANAGER.get_or_cache(file_path, extract_powerpoint_content) {
+    match POWERPOINT_CACHE_MANAGER.get_or_cache(resolved_file_path, extract_powerpoint_content) {
         Ok(powerpoint_cache) => {
             let slide_count = powerpoint_cache.total_slides.unwrap_or(0);
             PowerPointPageInfoResult::success(

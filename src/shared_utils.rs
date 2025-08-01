@@ -1,4 +1,5 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::env;
 use anyhow::{Result, Context};
 use crate::fast_pdf_extractor::FastPdfExtractor;
 use crate::cache_system::CacheManager;
@@ -14,9 +15,9 @@ pub struct PdfCache {
 
 // Implement CacheableContent for PdfCache
 impl_cacheable_content!(PdfCache, content, char_indices, total_pages);
-
-/// Global PDF cache manager
+ 
 lazy_static::lazy_static! {
+    /// Global PDF cache manager
     static ref PDF_CACHE_MANAGER: CacheManager<PdfCache> = CacheManager::new();
 }
 
@@ -192,14 +193,51 @@ pub fn parse_pages_parameter(pages: &str, total_pages: usize) -> Result<Vec<usiz
     Ok(page_numbers)
 }
 
-/// Check if a file exists and determine its type
-pub fn validate_file_path(file_path: &str) -> Result<String, String> {
-    if !Path::new(file_path).exists() {
-        return Err(format!("File not found: {}", file_path));
+/// Resolve a file path with security checks
+/// When PROJECT_ROOT is configured, absolute paths are rejected for security
+pub fn resolve_file_path(file_path: &str) -> Result<PathBuf, String> {
+    let path = Path::new(file_path);
+    
+    // Check if PROJECT_ROOT is configured
+    let project_root_configured = env::var("PROJECT_ROOT").is_ok();
+    
+    // Security check: reject absolute paths when PROJECT_ROOT is configured
+    if path.is_absolute() && project_root_configured {
+        return Err("Absolute paths are not allowed when PROJECT_ROOT is configured for security reasons".to_string());
+    }
+    
+    // If it's an absolute path and PROJECT_ROOT is not configured, allow it
+    if path.is_absolute() {
+        return Ok(path.to_path_buf());
+    }
+    
+    // For relative paths, try to resolve using the PROJECT_ROOT environment variable
+    if let Ok(project_root) = env::var("PROJECT_ROOT") {
+        let project_root_path = Path::new(&project_root);
+        if project_root_path.exists() {
+            return Ok(project_root_path.join(path));
+        } else {
+            return Err(format!("PROJECT_ROOT directory does not exist: {}", project_root));
+        }
+    }
+    
+    // If PROJECT_ROOT is not set, use current directory
+    match env::current_dir() {
+        Ok(current_dir) => Ok(current_dir.join(path)),
+        Err(e) => Err(format!("Failed to get current directory: {}", e)),
+    }
+}
+
+/// Check if a file exists and determine its type (expects already resolved path)
+pub fn validate_file_path(resolved_path: &str) -> Result<String, String> {
+    let path = Path::new(resolved_path);
+    
+    if !path.exists() {
+        return Err(format!("File not found: {}", resolved_path));
     }
     
     // Determine file type from extension
-    let extension = Path::new(file_path)
+    let extension = path
         .extension()
         .and_then(|ext| ext.to_str())
         .map(|ext| ext.to_lowercase());
@@ -215,9 +253,15 @@ pub fn validate_file_path(file_path: &str) -> Result<String, String> {
     }
 }
 
-/// Generate a markdown header for a file
-pub fn generate_file_header(file_path: &str) -> String {
-    format!("# {}\n\n", Path::new(file_path).file_name().unwrap().to_string_lossy())
+/// Resolve a file path and return it as a string
+pub fn resolve_file_path_string(file_path: &str) -> Result<String, String> {
+    resolve_file_path(file_path).map(|path| path.to_string_lossy().to_string())
+}
+
+/// Generate a markdown header for a file (expects already resolved path)
+pub fn generate_file_header(resolved_path: &str) -> String {
+    let path = Path::new(resolved_path);
+    format!("# {}\n\n", path.file_name().unwrap().to_string_lossy())
 }
 
 /// Generate a markdown header for a chunk/page

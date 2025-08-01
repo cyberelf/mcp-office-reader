@@ -108,8 +108,8 @@ pub struct ExcelCache {
 // Implement CacheableContent for ExcelCache
 impl_cacheable_content!(ExcelCache, content, char_indices, total_sheets);
 
-/// Global Excel cache manager
 lazy_static::lazy_static! {
+    /// Global Excel cache manager
     pub static ref EXCEL_CACHE_MANAGER: CacheManager<ExcelCache> = CacheManager::new();
 }
 
@@ -189,8 +189,9 @@ pub struct DocxCache {
 // Implement CacheableContent for DocxCache
 impl_cacheable_content!(DocxCache, content, char_indices, total_pages);
 
-/// Global DOCX cache manager
+
 lazy_static::lazy_static! {
+    /// Global DOCX cache manager
     pub static ref DOCX_CACHE_MANAGER: CacheManager<DocxCache> = CacheManager::new();
 }
 
@@ -329,24 +330,25 @@ fn extract_text_from_docx(_doc: &docx_rs::Docx) -> String {
 }
 
 /// Process a document based on its file extension with page-based selection
+/// Expects a resolved file path
 pub fn process_document_with_pages(
-    file_path: &str,
+    resolved_file_path: &str,
     pages: Option<String>,
 ) -> DocumentProcessingResult {
-    let file_path_string = file_path.to_string();
+    let file_path_string = resolved_file_path.to_string();
     let pages = pages.unwrap_or_else(|| "all".to_string());
     
     // Validate file and get its type
-    let file_type = match validate_file_path(file_path) {
+    let file_type = match validate_file_path(resolved_file_path) {
         Ok(ext) => ext,
         Err(e) => return DocumentProcessingResult::error(file_path_string, e),
     };
     
     match file_type.as_str() {
-        "xlsx" | "xls" => process_excel_with_pages(file_path, &pages),
-        "pdf" => process_pdf_with_pages(file_path, &pages),
-        "docx" | "doc" => process_docx_with_pages(file_path, &pages),
-        "pptx" | "ppt" => process_powerpoint_with_pages_wrapper(file_path, &pages),
+        "xlsx" | "xls" => process_excel_with_pages(resolved_file_path, &pages),
+        "pdf" => process_pdf_with_pages(resolved_file_path, &pages),
+        "docx" | "doc" => process_docx_with_pages(resolved_file_path, &pages),
+        "pptx" | "ppt" => process_powerpoint_with_pages_wrapper(resolved_file_path, &pages),
         _ => DocumentProcessingResult::error(
             file_path_string,
             format!("Unsupported file type: {}", file_type),
@@ -532,11 +534,12 @@ fn process_powerpoint_with_pages_wrapper(
 }
 
 /// Get document page information without reading the full content
-pub fn get_document_page_info(file_path: &str) -> DocumentPageInfoResult {
-    let file_path_string = file_path.to_string();
+/// Expects a resolved file path
+pub fn get_document_page_info(resolved_file_path: &str) -> DocumentPageInfoResult {
+    let file_path_string = resolved_file_path.to_string();
     
     // Validate file and get its type
-    let file_type = match validate_file_path(file_path) {
+    let file_type = match validate_file_path(resolved_file_path) {
         Ok(ext) => ext,
         Err(e) => {
             // Check if it's a file not found error
@@ -551,7 +554,7 @@ pub fn get_document_page_info(file_path: &str) -> DocumentPageInfoResult {
     match file_type.as_str() {
         "xlsx" | "xls" => {
             // Use Excel cache to get sheet information
-            match EXCEL_CACHE_MANAGER.get_or_cache(file_path, extract_excel_content) {
+            match EXCEL_CACHE_MANAGER.get_or_cache(resolved_file_path, extract_excel_content) {
                 Ok(excel_cache) => {
                     let total_sheets = excel_cache.total_sheets.unwrap_or(0);
                     let sheet_list = excel_cache.sheet_names.iter()
@@ -574,7 +577,7 @@ pub fn get_document_page_info(file_path: &str) -> DocumentPageInfoResult {
         },
         "pdf" => {
             // Use the cache to get PDF content and page count
-            match get_or_cache_pdf_content(file_path) {
+            match get_or_cache_pdf_content(resolved_file_path) {
                 Ok(pdf_cache) => {
                     if let Some(page_count) = pdf_cache.total_pages {
                         DocumentPageInfoResult::success(
@@ -597,7 +600,7 @@ pub fn get_document_page_info(file_path: &str) -> DocumentPageInfoResult {
         },
         "docx" | "doc" => {
             // Use DOCX cache to get page information
-            match DOCX_CACHE_MANAGER.get_or_cache(file_path, extract_docx_content) {
+            match DOCX_CACHE_MANAGER.get_or_cache(resolved_file_path, extract_docx_content) {
                 Ok(docx_cache) => {
                     let page_count = docx_cache.total_pages.unwrap_or(1);
                     DocumentPageInfoResult::success(
@@ -617,7 +620,7 @@ pub fn get_document_page_info(file_path: &str) -> DocumentPageInfoResult {
             }
         },
         "pptx" | "ppt" => {
-            let ppt_result = get_powerpoint_slide_info(file_path);
+            let ppt_result = get_powerpoint_slide_info(resolved_file_path);
             
             // Convert PowerPointPageInfoResult to DocumentPageInfoResult
             if let Some(error) = ppt_result.error {

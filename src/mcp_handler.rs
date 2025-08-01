@@ -9,6 +9,7 @@ use tokio_stream::StreamExt;
 use serde_json;
 
 use crate::document_parser::{process_document_with_pages, get_document_page_info, DocumentProcessingResult, DocumentPageInfoResult};
+use crate::shared_utils::resolve_file_path_string;
 use crate::streaming_parser::{stream_pdf_to_markdown, stream_excel_to_markdown, StreamingConfig, ProcessingProgress};
 use crate::powerpoint_parser::{
     process_powerpoint_with_slides, 
@@ -179,10 +180,24 @@ impl OfficeReader {
     pub async fn get_document_page_info(
         &self,
         #[tool(param)]
-        #[schemars(description = "Absolute path to the office document file")]
+        #[schemars(description = "Path to the office document file (absolute or relative to PROJECT_ROOT environment variable)")]
         file_path: String,
     ) -> DocumentPageInfo {
-        let result = get_document_page_info(&file_path);
+        // Resolve file path at entry point
+        let resolved_path = match resolve_file_path_string(&file_path) {
+            Ok(path) => path,
+            Err(e) => {
+                return DocumentPageInfo {
+                    file_path: file_path.clone(),
+                    total_pages: None,
+                    file_exists: false,
+                    error: Some(e),
+                    page_info: String::new(),
+                };
+            }
+        };
+        
+        let result = get_document_page_info(&resolved_path);
         result.into()
     }
 
@@ -191,12 +206,26 @@ impl OfficeReader {
     pub async fn read_office_document(
         &self,
         #[tool(param)]
-        #[schemars(description = "Absolute path to the office document file")]
+        #[schemars(description = "Path to the office document file (absolute or relative to PROJECT_ROOT environment variable)")]
         file_path: String,
         #[tool(param)]
         #[schemars(description = "Page/slide selection: integer for single page (e.g., 1), string for ranges/multiple pages (e.g., '1,3,5-7'), or 'all' for all pages/slides")]
         pages: Option<serde_json::Value>,
     ) -> PageBasedDocumentContent {
+        // Resolve file path at entry point
+        let resolved_path = match resolve_file_path_string(&file_path) {
+            Ok(path) => path,
+            Err(e) => {
+                return PageBasedDocumentContent {
+                    content: e,
+                    total_pages: None,
+                    requested_pages: String::new(),
+                    returned_pages: Vec::new(),
+                    file_path: file_path.clone(),
+                };
+            }
+        };
+        
         // Convert the pages parameter to a string format that our parser expects
         let pages_str = match pages {
             Some(serde_json::Value::Number(n)) => {
@@ -218,7 +247,7 @@ impl OfficeReader {
             None => None, // No pages specified, will default to "all"
         };
         
-        let result = process_document_with_pages(&file_path, pages_str);
+        let result = process_document_with_pages(&resolved_path, pages_str);
         result.into()
     }
 
@@ -227,12 +256,26 @@ impl OfficeReader {
     pub async fn read_powerpoint_slides(
         &self,
         #[tool(param)]
-        #[schemars(description = "Absolute path to the PowerPoint file")]
+        #[schemars(description = "Path to the PowerPoint file (absolute or relative to PROJECT_ROOT environment variable)")]
         file_path: String,
         #[tool(param)]
         #[schemars(description = "Slide selection: integer for single slide (e.g., 1), string for ranges/multiple slides (e.g., '1,3,5-7'), or 'all' for all slides")]
         slides: Option<serde_json::Value>,
     ) -> PageBasedDocumentContent {
+        // Resolve file path at entry point
+        let resolved_path = match resolve_file_path_string(&file_path) {
+            Ok(path) => path,
+            Err(e) => {
+                return PageBasedDocumentContent {
+                    content: e,
+                    total_pages: None,
+                    requested_pages: String::new(),
+                    returned_pages: Vec::new(),
+                    file_path: file_path.clone(),
+                };
+            }
+        };
+        
         // Convert the slides parameter to a string format
         let slides_str = match slides {
             Some(serde_json::Value::Number(n)) => {
@@ -247,7 +290,7 @@ impl OfficeReader {
             None => None,
         };
         
-        let result = process_powerpoint_with_slides(&file_path, slides_str);
+        let result = process_powerpoint_with_slides(&resolved_path, slides_str);
         
         // Convert PowerPointProcessingResult to PageBasedDocumentContent
         if let Some(error) = result.error {
@@ -274,10 +317,24 @@ impl OfficeReader {
     pub async fn get_powerpoint_slide_info(
         &self,
         #[tool(param)]
-        #[schemars(description = "Absolute path to the PowerPoint file")]
+        #[schemars(description = "Path to the PowerPoint file (absolute or relative to PROJECT_ROOT environment variable)")]
         file_path: String,
     ) -> DocumentPageInfo {
-        let result = get_powerpoint_slide_info(&file_path);
+        // Resolve file path at entry point
+        let resolved_path = match resolve_file_path_string(&file_path) {
+            Ok(path) => path,
+            Err(e) => {
+                return DocumentPageInfo {
+                    file_path: file_path.clone(),
+                    total_pages: None,
+                    file_exists: false,
+                    error: Some(e),
+                    page_info: String::new(),
+                };
+            }
+        };
+        
+        let result = get_powerpoint_slide_info(&resolved_path);
         
         // Convert PowerPointPageInfoResult to DocumentPageInfo
         let file_exists = result.file_exists();
@@ -295,7 +352,7 @@ impl OfficeReader {
     pub async fn generate_powerpoint_slide_snapshot(
         &self,
         #[tool(param)]
-        #[schemars(description = "Absolute path to the PowerPoint file")]
+        #[schemars(description = "Path to the PowerPoint file (absolute or relative to PROJECT_ROOT environment variable)")]
         file_path: String,
         #[tool(param)]
         #[schemars(description = "Slide number to capture (1-based index)")]
@@ -304,8 +361,21 @@ impl OfficeReader {
         #[schemars(description = "Output image format (png, jpg, etc.)")]
         output_format: Option<String>,
     ) -> SlideSnapshot {
+        // Resolve file path at entry point
+        let resolved_path = match resolve_file_path_string(&file_path) {
+            Ok(path) => path,
+            Err(e) => {
+                return SlideSnapshot {
+                    slide_number,
+                    image_data: None,
+                    image_format: output_format.unwrap_or_else(|| "png".to_string()),
+                    error: Some(e),
+                };
+            }
+        };
+        
         let format = output_format.unwrap_or_else(|| "png".to_string());
-        let result = generate_slide_snapshot(&file_path, slide_number, &format);
+        let result = generate_slide_snapshot(&resolved_path, slide_number, &format);
         result.into()
     }
 
@@ -314,7 +384,7 @@ impl OfficeReader {
     pub async fn stream_office_document(
         &self,
         #[tool(param)]
-        #[schemars(description = "Absolute path to the office document file")]
+        #[schemars(description = "Path to the office document file (absolute or relative to PROJECT_ROOT environment variable)")]
         file_path: String,
         #[tool(param)]
         #[schemars(description = "Maximum characters per chunk (default: 10000)")]
@@ -328,21 +398,37 @@ impl OfficeReader {
             config.max_chunk_size_chars = size;
         }
         
+        // Resolve the file path
+        let resolved_path = match resolve_file_path_string(&file_path) {
+            Ok(path) => path,
+            Err(e) => {
+                return StreamingContent {
+                    progress: ProcessingProgress {
+                        current_page: 0,
+                        total_pages: None,
+                        current_chunk: e.clone(),
+                        is_complete: true,
+                        error: Some(e),
+                    }
+                };
+            }
+        };
+        
         // Check if file exists
-        if !Path::new(&file_path).exists() {
+        if !Path::new(&resolved_path).exists() {
             return StreamingContent {
                 progress: ProcessingProgress {
                     current_page: 0,
                     total_pages: None,
-                    current_chunk: format!("File not found: {}", file_path),
+                    current_chunk: format!("File not found: {}", resolved_path),
                     is_complete: true,
-                    error: Some(format!("File not found: {}", file_path)),
+                    error: Some(format!("File not found: {}", resolved_path)),
                 }
             };
         }
         
         // Determine file type from extension
-        let extension = Path::new(&file_path)
+        let extension = Path::new(&resolved_path)
             .extension()
             .and_then(|ext| ext.to_str())
             .map(|ext| ext.to_lowercase());
@@ -352,7 +438,7 @@ impl OfficeReader {
                 match ext.as_str() {
                     "pdf" => {
                         // Stream PDF content
-                        let mut stream = Box::pin(stream_pdf_to_markdown(&file_path, config));
+                        let mut stream = Box::pin(stream_pdf_to_markdown(&resolved_path, config));
                         if let Some(progress) = stream.next().await {
                             StreamingContent { progress }
                         } else {
@@ -369,7 +455,7 @@ impl OfficeReader {
                     }
                     "xlsx" | "xls" => {
                         // Stream Excel content
-                        let mut stream = Box::pin(stream_excel_to_markdown(&file_path, config));
+                        let mut stream = Box::pin(stream_excel_to_markdown(&resolved_path, config));
                         if let Some(progress) = stream.next().await {
                             StreamingContent { progress }
                         } else {
@@ -429,6 +515,10 @@ impl ServerHandler for OfficeReader {
                 4. get_powerpoint_slide_info: Get PowerPoint slide information without reading content\n\
                 5. generate_powerpoint_slide_snapshot: Generate image snapshots of PowerPoint slides\n\
                 6. stream_office_document: Stream document content in chunks with progress tracking\n\n\
+                File Path Support:\n\
+                - Supports both absolute and relative file paths\n\
+                - Relative paths are resolved using the PROJECT_ROOT environment variable if set\n\
+                - Falls back to current working directory if PROJECT_ROOT is not set\n\n\
                 For Excel files, pages refer to sheets. For PDF files, pages refer to actual pages. For DOCX files, there is only one page. For PowerPoint files, pages refer to slides.\n\
                 Use get_document_page_info or get_powerpoint_slide_info first to see available pages/slides, then use the appropriate read function with specific selection.".to_string()
             ),
