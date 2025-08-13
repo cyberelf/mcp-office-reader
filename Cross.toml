@@ -1,0 +1,3 @@
+[target.x86_64-unknown-linux-gnu]
+# Use the default cross image for x86_64 Linux
+image = "ghcr.io/cross-rs/cross:x86_64-unknown-linux-gnu"

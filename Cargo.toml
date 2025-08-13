@@ -58,10 +58,12 @@ tokio-stream = "0.1.15"  # For streaming tests
 cargo-tarpaulin = "0.32.7"
 
 [features]
-default = ["pdfium"]
-pdfium = ["pdfium-render"]  # Enable pdfium-render backend
-mupdf_backend = ["mupdf"]  # Enable MuPDF backend
-poppler = ["poppler-rs"]  # Enable Poppler backend
+default = ["pdf-extract-only"]
+# Feature flags for different PDF backends
+pdfium = ["pdfium-render"]  # Enable pdfium-render backend (fastest, requires native libs)
+mupdf_backend = ["mupdf"]   # Enable MuPDF backend (fast, requires native libs)  
+poppler = ["poppler-rs"]    # Enable Poppler backend (fast, requires native libs)
+pdf-extract-only = []       # Use only pdf-extract (slower but no native dependencies)
 
 [profile.release]
 opt-level = 3
