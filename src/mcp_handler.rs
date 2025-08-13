@@ -1,5 +1,8 @@
-use rmcp::{service::RequestContext, RoleServer, Error as McpError, model::ServerInfo, model::{IntoContents, Content}, tool};
+use rmcp::{model::{Content, IntoContents, ServerInfo, CallToolResult, ErrorCode}, service::RequestContext, tool, tool_handler, tool_router, ErrorData, RoleServer};
+use rmcp::handler::server::tool::{ToolRouter, Parameters};
 use rmcp::model::{Implementation, ListPromptsResult, PaginatedRequestParam, ProtocolVersion, ServerCapabilities};
+// Define McpError as an alias for ErrorData as per RMCP 0.5.0
+type McpError = ErrorData;
 use rmcp::ServerHandler;
 use rmcp::serve_server;
 use rmcp::schemars;
@@ -18,21 +21,40 @@ use crate::powerpoint_parser::{
     SlideSnapshotResult,
 };
 
-/// Office document processor struct that implements the MCP tool interface
-#[derive(Clone)]
-pub struct OfficeReader;
-
-impl OfficeReader {
-    pub fn new() -> Self {
-        OfficeReader
-    }
-}
-
 /// Input for the read_office_document tool
 #[derive(Serialize, Deserialize, Debug, schemars::JsonSchema)]
 pub struct ReadOfficeDocumentInput {
     #[schemars(description = "Path to the office document file")]
     pub file_path: String,
+}
+
+/// Input for read by page
+#[derive(Serialize, Deserialize, Debug, schemars::JsonSchema)]
+pub struct ReadOfficeDocumentByPageInput {
+    #[schemars(description = "Path to the office document file")]
+    pub file_path: String,
+    #[schemars(description = "Page/slide selection: integer for single page (e.g., 1), string for ranges/multiple pages (e.g., '1,3,5-7'), or 'all' for all pages/slides")]
+    pub pages: Option<serde_json::Value>,
+}
+
+/// Input for read by slide
+#[derive(Serialize, Deserialize, Debug, schemars::JsonSchema)]
+pub struct ReadOfficeDocumentBySlideInput {
+    #[schemars(description = "Path to the office document file")]
+    pub file_path: String,
+    #[schemars(description = "Slide selection: integer for single slide (e.g., 1), string for ranges/multiple slides (e.g., '1,3,5-7'), or 'all' for all slides")]
+    pub slides: Option<serde_json::Value>,
+}
+
+/// Input for generate_powerpoint_slide_snapshot
+#[derive(Serialize, Deserialize, Debug, schemars::JsonSchema)]
+pub struct GeneratePowerpointSlideSnapshotInput {
+    #[schemars(description = "Path to the PowerPoint file")]
+    pub file_path: String,
+    #[schemars(description = "Slide number to capture (1-based index)")]
+    pub slide_number: usize,
+    #[schemars(description = "Output image format (png, jpg, etc.)")]
+    pub output_format: Option<String>,
 }
 
 /// Input for the stream_office_document tool
@@ -173,61 +195,47 @@ impl From<SlideSnapshotResult> for SlideSnapshot {
     }
 }
 
-#[tool(tool_box)]
+/// Office document processor struct that implements the MCP tool interface
+#[derive(Clone)]
+pub struct OfficeReader {
+    tool_router: ToolRouter<Self>,
+}
+
+#[tool_router]
 impl OfficeReader {
+    pub fn new() -> Self {
+        Self {
+            tool_router: Self::tool_router(),
+        }
+    }
+
     /// Get the page information of an office document without reading the full content
     #[tool(description = "Get the page information of an office document (Excel, PDF, DOCX, PowerPoint) without reading the full content")]
     pub async fn get_document_page_info(
         &self,
-        #[tool(param)]
-        #[schemars(description = "Path to the office document file (absolute or relative to PROJECT_ROOT environment variable)")]
-        file_path: String,
-    ) -> DocumentPageInfo {
+        params: Parameters<ReadOfficeDocumentInput>,
+    ) -> Result<CallToolResult, McpError> {
         // Resolve file path at entry point
-        let resolved_path = match resolve_file_path_string(&file_path) {
-            Ok(path) => path,
-            Err(e) => {
-                return DocumentPageInfo {
-                    file_path: file_path.clone(),
-                    total_pages: None,
-                    file_exists: false,
-                    error: Some(e),
-                    page_info: String::new(),
-                };
-            }
-        };
+        let resolved_path = resolve_file_path_string(&params.0.file_path)
+            .map_err(|e| ErrorData::new(ErrorCode::INVALID_PARAMS, e, None))?;
         
         let result = get_document_page_info(&resolved_path);
-        result.into()
+        let doc_page_info: DocumentPageInfo = result.into();
+        Ok(CallToolResult::success(doc_page_info.into_contents()))
     }
 
     /// Read an office document and return its content as markdown with page selection
     #[tool(description = "Read an office document (Excel, PDF, DOCX, PowerPoint) and return its content as markdown with page/slide selection")]
     pub async fn read_office_document(
         &self,
-        #[tool(param)]
-        #[schemars(description = "Path to the office document file (absolute or relative to PROJECT_ROOT environment variable)")]
-        file_path: String,
-        #[tool(param)]
-        #[schemars(description = "Page/slide selection: integer for single page (e.g., 1), string for ranges/multiple pages (e.g., '1,3,5-7'), or 'all' for all pages/slides")]
-        pages: Option<serde_json::Value>,
-    ) -> PageBasedDocumentContent {
+        params: Parameters<ReadOfficeDocumentByPageInput>,
+    ) -> Result<CallToolResult, McpError> {
         // Resolve file path at entry point
-        let resolved_path = match resolve_file_path_string(&file_path) {
-            Ok(path) => path,
-            Err(e) => {
-                return PageBasedDocumentContent {
-                    content: e,
-                    total_pages: None,
-                    requested_pages: String::new(),
-                    returned_pages: Vec::new(),
-                    file_path: file_path.clone(),
-                };
-            }
-        };
+        let resolved_path = resolve_file_path_string(&params.0.file_path)
+            .map_err(|e| ErrorData::new(ErrorCode::INVALID_PARAMS, e, None))?;
         
         // Convert the pages parameter to a string format that our parser expects
-        let pages_str = match pages {
+        let pages_str = match params.0.pages {
             Some(serde_json::Value::Number(n)) => {
                 // Handle integer input (e.g., 1, 2, 3)
                 if let Some(page_num) = n.as_u64() {
@@ -248,36 +256,22 @@ impl OfficeReader {
         };
         
         let result = process_document_with_pages(&resolved_path, pages_str);
-        result.into()
+        let page_content: PageBasedDocumentContent = result.into();
+        Ok(CallToolResult::success(page_content.into_contents()))
     }
 
     /// Read a PowerPoint presentation and return its content as markdown with slide selection
     #[tool(description = "Read a PowerPoint presentation (PPT/PPTX) and return its content as markdown with slide selection")]
     pub async fn read_powerpoint_slides(
         &self,
-        #[tool(param)]
-        #[schemars(description = "Path to the PowerPoint file (absolute or relative to PROJECT_ROOT environment variable)")]
-        file_path: String,
-        #[tool(param)]
-        #[schemars(description = "Slide selection: integer for single slide (e.g., 1), string for ranges/multiple slides (e.g., '1,3,5-7'), or 'all' for all slides")]
-        slides: Option<serde_json::Value>,
-    ) -> PageBasedDocumentContent {
+        params: Parameters<ReadOfficeDocumentBySlideInput>,
+    ) -> Result<CallToolResult, McpError> {
         // Resolve file path at entry point
-        let resolved_path = match resolve_file_path_string(&file_path) {
-            Ok(path) => path,
-            Err(e) => {
-                return PageBasedDocumentContent {
-                    content: e,
-                    total_pages: None,
-                    requested_pages: String::new(),
-                    returned_pages: Vec::new(),
-                    file_path: file_path.clone(),
-                };
-            }
-        };
+        let resolved_path = resolve_file_path_string(&params.0.file_path)
+            .map_err(|e| ErrorData::new(ErrorCode::INVALID_PARAMS, e, None))?;
         
         // Convert the slides parameter to a string format
-        let slides_str = match slides {
+        let slides_str = match params.0.slides {
             Some(serde_json::Value::Number(n)) => {
                 if let Some(slide_num) = n.as_u64() {
                     Some(slide_num.to_string())
@@ -294,137 +288,82 @@ impl OfficeReader {
         
         // Convert PowerPointProcessingResult to PageBasedDocumentContent
         if let Some(error) = result.error {
-            PageBasedDocumentContent {
-                content: error,
-                total_pages: None,
-                requested_pages: String::new(),
-                returned_pages: Vec::new(),
-                file_path: result.file_path,
-            }
+            return Err(ErrorData::new(ErrorCode::INVALID_PARAMS, error, None));
         } else {
-            PageBasedDocumentContent {
+            let page_content = PageBasedDocumentContent {
                 content: result.content,
                 total_pages: result.total_slides,
                 requested_pages: result.requested_slides,
                 returned_pages: result.returned_slides,
                 file_path: result.file_path,
-            }
-        }
+            };
+            return Ok(CallToolResult::success(page_content.into_contents()));
+        };
+        
     }
 
     /// Get PowerPoint slide information without reading the full content
     #[tool(description = "Get PowerPoint slide information (slide count, etc.) without reading the full content")]
     pub async fn get_powerpoint_slide_info(
         &self,
-        #[tool(param)]
-        #[schemars(description = "Path to the PowerPoint file (absolute or relative to PROJECT_ROOT environment variable)")]
-        file_path: String,
-    ) -> DocumentPageInfo {
+        params: Parameters<ReadOfficeDocumentInput>,
+    ) -> Result<CallToolResult, McpError> {
         // Resolve file path at entry point
-        let resolved_path = match resolve_file_path_string(&file_path) {
-            Ok(path) => path,
-            Err(e) => {
-                return DocumentPageInfo {
-                    file_path: file_path.clone(),
-                    total_pages: None,
-                    file_exists: false,
-                    error: Some(e),
-                    page_info: String::new(),
-                };
-            }
-        };
+        let resolved_path = resolve_file_path_string(&params.0.file_path)
+            .map_err(|e| ErrorData::new(ErrorCode::INVALID_PARAMS, e, None))?;
         
         let result = get_powerpoint_slide_info(&resolved_path);
         
         // Convert PowerPointPageInfoResult to DocumentPageInfo
         let file_exists = result.file_exists();
-        DocumentPageInfo {
+        let doc_page_info = DocumentPageInfo {
             file_path: result.file_path,
             total_pages: result.total_slides,
             file_exists,
             error: result.error,
             page_info: result.slide_info,
-        }
+        };
+        
+        Ok(CallToolResult::success(doc_page_info.into_contents()))
     }
 
     /// Generate a snapshot image of a specific PowerPoint slide using native Rust rendering (no external dependencies required)
     #[tool(description = "Generate a snapshot image of a specific PowerPoint slide using native Rust rendering (no external dependencies required)")]
     pub async fn generate_powerpoint_slide_snapshot(
         &self,
-        #[tool(param)]
-        #[schemars(description = "Path to the PowerPoint file (absolute or relative to PROJECT_ROOT environment variable)")]
-        file_path: String,
-        #[tool(param)]
-        #[schemars(description = "Slide number to capture (1-based index)")]
-        slide_number: usize,
-        #[tool(param)]
-        #[schemars(description = "Output image format (png, jpg, etc.)")]
-        output_format: Option<String>,
-    ) -> SlideSnapshot {
+        params: Parameters<GeneratePowerpointSlideSnapshotInput>,
+    ) -> Result<CallToolResult, McpError> {
         // Resolve file path at entry point
-        let resolved_path = match resolve_file_path_string(&file_path) {
-            Ok(path) => path,
-            Err(e) => {
-                return SlideSnapshot {
-                    slide_number,
-                    image_data: None,
-                    image_format: output_format.unwrap_or_else(|| "png".to_string()),
-                    error: Some(e),
-                };
-            }
-        };
+        let resolved_path = resolve_file_path_string(&params.0.file_path)
+            .map_err(|e| ErrorData::new(ErrorCode::INVALID_PARAMS, e, None))?;
         
-        let format = output_format.unwrap_or_else(|| "png".to_string());
-        let result = generate_slide_snapshot(&resolved_path, slide_number, &format);
-        result.into()
+        let format = params.0.output_format.unwrap_or_else(|| "png".to_string());
+        let result = generate_slide_snapshot(&resolved_path, params.0.slide_number, &format);
+        let slide_snapshot: SlideSnapshot = result.into();
+        Ok(CallToolResult::success(slide_snapshot.into_contents()))
     }
 
     /// Stream an office document and return its content as markdown in chunks
     #[tool(description = "Stream an office document (Excel, PDF, DOCX, PowerPoint) and return its content as markdown in chunks with progress")]
     pub async fn stream_office_document(
         &self,
-        #[tool(param)]
-        #[schemars(description = "Path to the office document file (absolute or relative to PROJECT_ROOT environment variable)")]
-        file_path: String,
-        #[tool(param)]
-        #[schemars(description = "Maximum characters per chunk (default: 10000)")]
-        chunk_size: Option<usize>,
-    ) -> StreamingContent {
+        params: Parameters<StreamOfficeDocumentInput>,
+    ) -> Result<CallToolResult, McpError> {
         use std::path::Path;
         
         // Create streaming config
         let mut config = StreamingConfig::default();
-        if let Some(size) = chunk_size {
+        if let Some(size) = params.0.chunk_size {
             config.max_chunk_size_chars = size;
         }
         
         // Resolve the file path
-        let resolved_path = match resolve_file_path_string(&file_path) {
-            Ok(path) => path,
-            Err(e) => {
-                return StreamingContent {
-                    progress: ProcessingProgress {
-                        current_page: 0,
-                        total_pages: None,
-                        current_chunk: e.clone(),
-                        is_complete: true,
-                        error: Some(e),
-                    }
-                };
-            }
-        };
+        let resolved_path = resolve_file_path_string(&params.0.file_path)
+            .map_err(|e| ErrorData::new(ErrorCode::INVALID_PARAMS, e, None))?;
         
         // Check if file exists
         if !Path::new(&resolved_path).exists() {
-            return StreamingContent {
-                progress: ProcessingProgress {
-                    current_page: 0,
-                    total_pages: None,
-                    current_chunk: format!("File not found: {}", resolved_path),
-                    is_complete: true,
-                    error: Some(format!("File not found: {}", resolved_path)),
-                }
-            };
+            return Err(ErrorData::new(ErrorCode::INVALID_PARAMS, format!("File not found: {}", resolved_path), None));
         }
         
         // Determine file type from extension
@@ -439,7 +378,7 @@ impl OfficeReader {
                     "pdf" => {
                         // Stream PDF content
                         let mut stream = Box::pin(stream_pdf_to_markdown(&resolved_path, config));
-                        if let Some(progress) = stream.next().await {
+                        let content = if let Some(progress) = stream.next().await {
                             StreamingContent { progress }
                         } else {
                             StreamingContent {
@@ -451,12 +390,13 @@ impl OfficeReader {
                                     error: Some("No content found".to_string()),
                                 }
                             }
-                        }
+                        };
+                        return Ok(CallToolResult::success(content.into_contents()));
                     }
                     "xlsx" | "xls" => {
                         // Stream Excel content
                         let mut stream = Box::pin(stream_excel_to_markdown(&resolved_path, config));
-                        if let Some(progress) = stream.next().await {
+                        let content = if let Some(progress) = stream.next().await {
                             StreamingContent { progress }
                         } else {
                             StreamingContent {
@@ -468,37 +408,22 @@ impl OfficeReader {
                                     error: Some("No content found".to_string()),
                                 }
                             }
-                        }
+                        };
+                        return Ok(CallToolResult::success(content.into_contents()));
                     }
                     _ => {
-                        StreamingContent {
-                            progress: ProcessingProgress {
-                                current_page: 0,
-                                total_pages: None,
-                                current_chunk: format!("Unsupported file type for streaming: {}", ext),
-                                is_complete: true,
-                                error: Some(format!("Unsupported file type for streaming: {}", ext)),
-                            }
-                        }
+                        return Err(ErrorData::new(ErrorCode::INVALID_PARAMS, format!("Unsupported file type for streaming: {}", ext), None));
                     }
                 }
             }
             None => {
-                StreamingContent {
-                    progress: ProcessingProgress {
-                        current_page: 0,
-                        total_pages: None,
-                        current_chunk: "Unable to determine file type (no extension)".to_string(),
-                        is_complete: true,
-                        error: Some("Unable to determine file type (no extension)".to_string()),
-                    }
-                }
+                return Err(ErrorData::new(ErrorCode::INVALID_PARAMS, "Unable to determine file type (no extension)".to_string(), None));
             }
         }
     }
 }
 
-#[tool(tool_box)]
+#[tool_handler]
 impl ServerHandler for OfficeReader {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
@@ -527,9 +452,9 @@ impl ServerHandler for OfficeReader {
 
     async fn list_prompts(
         &self,
-        _request: PaginatedRequestParam,
+        _request: Option<PaginatedRequestParam>,
         _: RequestContext<RoleServer>,
-    ) -> Result<ListPromptsResult, McpError> {
+    ) -> Result<ListPromptsResult, ErrorData> {
         // We don't use prompts in this implementation
         Ok(ListPromptsResult {
             next_cursor: None,

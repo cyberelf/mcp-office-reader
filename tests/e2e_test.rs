@@ -1,9 +1,25 @@
 use std::io::Write;
 use std::path::Path;
+use std::sync::Once;
 use tempfile::NamedTempFile;
 use tokio::process::Command;
 use tokio::time::Duration;
 use rmcp::{model::CallToolRequestParam, service::ServiceExt, transport::TokioChildProcess};
+
+static INIT: Once = Once::new();
+
+fn ensure_binary_built() {
+    INIT.call_once(|| {
+        let output = std::process::Command::new("cargo")
+            .args(["build", "--release", "--bin", "office_reader_mcp"])
+            .output()
+            .expect("Failed to build binary");
+        
+        if !output.status.success() {
+            panic!("Failed to build binary: {}", String::from_utf8_lossy(&output.stderr));
+        }
+    });
+}
 
 #[tokio::test]
 async fn test_process_text_document() {
@@ -12,10 +28,13 @@ async fn test_process_text_document() {
     temp_file.write_all(b"Test document content").expect("Failed to write to temp file");
     let file_path = temp_file.path().to_str().unwrap().to_string();
     
-    // Start the MCP server in a separate process
+    // Build binary once if not already built
+    ensure_binary_built();
+    
+    // Start the MCP server using pre-built binary
     let service = ()
         .serve(TokioChildProcess::new(
-            Command::new("cargo").arg("run"),
+            Command::new("./target/release/office_reader_mcp"),
         ).unwrap())
         .await.unwrap();
     
@@ -25,7 +44,7 @@ async fn test_process_text_document() {
     // Get server info
     let server_info = service.peer_info();
     println!("Server info: {:?}", server_info);
-    assert!(server_info.server_info.name == "rmcp");
+    assert!(server_info.unwrap().server_info.name == "rmcp");
     
     // List tools
     let tools = service.list_tools(Default::default()).await.unwrap();
@@ -53,10 +72,13 @@ async fn test_process_excel_document() {
     let file_path = Path::new("tests").join("test.xlsx");
     let file_path = file_path.to_str().unwrap().to_string();
     
-    // Start the MCP server in a separate process
+    // Build binary once if not already built
+    ensure_binary_built();
+    
+    // Start the MCP server using pre-built binary
     let service = ()
         .serve(TokioChildProcess::new(
-            Command::new("cargo").arg("run"),
+            Command::new("./target/release/office_reader_mcp"),
         ).unwrap())
         .await.unwrap();
     
@@ -66,7 +88,7 @@ async fn test_process_excel_document() {
     // Get server info
     let server_info = service.peer_info();
     println!("Server info: {:?}", server_info);
-    assert!(server_info.server_info.name == "rmcp");
+    assert!(server_info.unwrap().server_info.name == "rmcp");
     
     // List tools
     let tools = service.list_tools(Default::default()).await.unwrap();
@@ -86,7 +108,7 @@ async fn test_process_excel_document() {
     assert!(result.is_error.is_some() && !result.is_error.unwrap());
     
     // Check that the content contains Excel-specific content
-    let content = result.content[0].as_text().unwrap().text.clone().to_lowercase();
+    let content = result.content.as_ref().unwrap()[0].as_text().unwrap().text.clone().to_lowercase();
     assert!(content.contains("this is a test table"));
 
     // Also test with explicit page parameter
@@ -103,7 +125,7 @@ async fn test_process_excel_document() {
     assert!(result_with_pages.is_error.is_some() && !result_with_pages.is_error.unwrap());
     
     // Check that the content contains page metadata
-    let content_with_pages = result_with_pages.content[0].as_text().unwrap().text.clone().to_lowercase();
+    let content_with_pages = result_with_pages.content.as_ref().unwrap()[0].as_text().unwrap().text.clone().to_lowercase();
     assert!(content_with_pages.contains("this is a test table"));
     assert!(content_with_pages.contains("requested_pages") || content_with_pages.contains("page"));
 
@@ -117,10 +139,13 @@ async fn test_stream_excel_document() {
     let file_path = Path::new("tests").join("test.xlsx");
     let file_path = file_path.to_str().unwrap().to_string();
     
-    // Start the MCP server in a separate process
+    // Build binary once if not already built
+    ensure_binary_built();
+    
+    // Start the MCP server using pre-built binary
     let service = ()
         .serve(TokioChildProcess::new(
-            Command::new("cargo").arg("run"),
+            Command::new("./target/release/office_reader_mcp"),
         ).unwrap())
         .await.unwrap();
     
@@ -130,7 +155,7 @@ async fn test_stream_excel_document() {
     // Get server info
     let server_info = service.peer_info();
     println!("Server info: {:?}", server_info);
-    assert!(server_info.server_info.name == "rmcp");
+    assert!(server_info.unwrap().server_info.name == "rmcp");
     
     // List tools
     let tools = service.list_tools(Default::default()).await.unwrap();
@@ -155,7 +180,7 @@ async fn test_stream_excel_document() {
     assert!(result.is_error.is_some() && !result.is_error.unwrap());
     
     // Check that the content contains streaming progress information
-    let content = result.content[0].as_text().unwrap().text.clone().to_lowercase();
+    let content = result.content.as_ref().unwrap()[0].as_text().unwrap().text.clone().to_lowercase();
     assert!(content.contains("current_page") || content.contains("chunk"));
     assert!(content.contains("this is a test table"));
 
@@ -173,10 +198,13 @@ async fn test_stream_pdf_document_with_small_chunk() {
     temp_file.write_all(long_content.as_bytes()).expect("Failed to write to temp file");
     let file_path = temp_file.path().to_str().unwrap().to_string();
     
-    // Start the MCP server in a separate process
+    // Build binary once if not already built
+    ensure_binary_built();
+    
+    // Start the MCP server using pre-built binary
     let service = ()
         .serve(TokioChildProcess::new(
-            Command::new("cargo").arg("run"),
+            Command::new("./target/release/office_reader_mcp"),
         ).unwrap())
         .await.unwrap();
     
@@ -194,7 +222,7 @@ async fn test_stream_pdf_document_with_small_chunk() {
     println!("PDF Streaming Result: {:?}", result);
     
     // The result should contain progress information
-    let content = result.content[0].as_text().unwrap().text.clone();
+    let content = result.content.as_ref().unwrap()[0].as_text().unwrap().text.clone();
     
     // Should contain JSON progress info
     assert!(content.contains("current_page") || content.contains("chunk"));
@@ -209,10 +237,13 @@ async fn test_stream_pdf_document_with_small_chunk() {
 
 #[tokio::test]
 async fn test_stream_nonexistent_file() {
-    // Start the MCP server in a separate process
+    // Build binary once if not already built
+    ensure_binary_built();
+    
+    // Start the MCP server using pre-built binary
     let service = ()
         .serve(TokioChildProcess::new(
-            Command::new("cargo").arg("run"),
+            Command::new("./target/release/office_reader_mcp"),
         ).unwrap())
         .await.unwrap();
     
@@ -226,14 +257,11 @@ async fn test_stream_nonexistent_file() {
             "file_path": "nonexistent_file.pdf",
             "chunk_size": 1000
         }).as_object().cloned(),
-    }).await.unwrap();
+    }).await;
     println!("Nonexistent file result: {:?}", result);
     
     // The tool call should succeed but return an error in the content
-    assert!(result.is_error.is_some() && !result.is_error.unwrap());
-    
-    let content = result.content[0].as_text().unwrap().text.clone().to_lowercase();
-    assert!(content.contains("file not found"));
+    assert!(result.is_err());
 
     // Kill the server process
     service.cancel().await.unwrap();
@@ -246,10 +274,13 @@ async fn test_stream_unsupported_file_type() {
     temp_file.write_all(b"This is a text file").expect("Failed to write to temp file");
     let file_path = temp_file.path().to_str().unwrap().to_string();
     
-    // Start the MCP server in a separate process
+    // Build binary once if not already built
+    ensure_binary_built();
+    
+    // Start the MCP server using pre-built binary
     let service = ()
         .serve(TokioChildProcess::new(
-            Command::new("cargo").arg("run"),
+            Command::new("./target/release/office_reader_mcp"),
         ).unwrap())
         .await.unwrap();
     
@@ -263,14 +294,11 @@ async fn test_stream_unsupported_file_type() {
             "file_path": file_path,
             "chunk_size": 1000
         }).as_object().cloned(),
-    }).await.unwrap();
+    }).await;
     println!("Unsupported file type result: {:?}", result);
     
     // The tool call should succeed but return an error about unsupported file type
-    assert!(result.is_error.is_some() && !result.is_error.unwrap());
-    
-    let content = result.content[0].as_text().unwrap().text.clone().to_lowercase();
-    assert!(content.contains("unsupported file type") || content.contains("error"));
+    assert!(result.is_err());
 
     // Kill the server process
     service.cancel().await.unwrap();
@@ -282,10 +310,13 @@ async fn test_stream_with_default_chunk_size() {
     let file_path = Path::new("tests").join("test.xlsx");
     let file_path = file_path.to_str().unwrap().to_string();
     
-    // Start the MCP server in a separate process
+    // Build binary once if not already built
+    ensure_binary_built();
+    
+    // Start the MCP server using pre-built binary
     let service = ()
         .serve(TokioChildProcess::new(
-            Command::new("cargo").arg("run"),
+            Command::new("./target/release/office_reader_mcp"),
         ).unwrap())
         .await.unwrap();
     
@@ -306,7 +337,7 @@ async fn test_stream_with_default_chunk_size() {
     assert!(result.is_error.is_some() && !result.is_error.unwrap());
     
     // Check that the content contains expected information
-    let content = result.content[0].as_text().unwrap().text.clone().to_lowercase();
+    let content = result.content.as_ref().unwrap()[0].as_text().unwrap().text.clone().to_lowercase();
     assert!(content.contains("current_page") || content.contains("chunk"));
 
     // Kill the server process
@@ -319,10 +350,13 @@ async fn test_get_document_page_info() {
     let file_path = Path::new("tests").join("test.xlsx");
     let file_path = file_path.to_str().unwrap().to_string();
     
-    // Start the MCP server in a separate process
+    // Build binary once if not already built
+    ensure_binary_built();
+    
+    // Start the MCP server using pre-built binary
     let service = ()
         .serve(TokioChildProcess::new(
-            Command::new("cargo").arg("run"),
+            Command::new("./target/release/office_reader_mcp"),
         ).unwrap())
         .await.unwrap();
     
@@ -347,7 +381,7 @@ async fn test_get_document_page_info() {
     assert!(result.is_error.is_some() && !result.is_error.unwrap());
     
     // Check that the content contains page information
-    let content = result.content[0].as_text().unwrap().text.clone().to_lowercase();
+    let content = result.content.as_ref().unwrap()[0].as_text().unwrap().text.clone().to_lowercase();
     assert!(content.contains("total pages") || content.contains("page"));
     assert!(content.contains("file:"));
 
@@ -357,10 +391,13 @@ async fn test_get_document_page_info() {
 
 #[tokio::test]
 async fn test_get_document_page_info_nonexistent_file() {
-    // Start the MCP server in a separate process
+    // Build binary once if not already built
+    ensure_binary_built();
+    
+    // Start the MCP server using pre-built binary
     let service = ()
         .serve(TokioChildProcess::new(
-            Command::new("cargo").arg("run"),
+            Command::new("./target/release/office_reader_mcp"),
         ).unwrap())
         .await.unwrap();
     
@@ -379,7 +416,7 @@ async fn test_get_document_page_info_nonexistent_file() {
     // The tool call should succeed but return file not found info
     assert!(result.is_error.is_some() && !result.is_error.unwrap());
     
-    let content = result.content[0].as_text().unwrap().text.clone().to_lowercase();
+    let content = result.content.as_ref().unwrap()[0].as_text().unwrap().text.clone().to_lowercase();
     assert!(content.contains("file not found"));
 
     // Kill the server process
@@ -392,10 +429,13 @@ async fn test_read_document_with_specific_pages() {
     let file_path = Path::new("tests").join("test.xlsx");
     let file_path = file_path.to_str().unwrap().to_string();
     
-    // Start the MCP server in a separate process
+    // Build binary once if not already built
+    ensure_binary_built();
+    
+    // Start the MCP server using pre-built binary
     let service = ()
         .serve(TokioChildProcess::new(
-            Command::new("cargo").arg("run"),
+            Command::new("./target/release/office_reader_mcp"),
         ).unwrap())
         .await.unwrap();
     
@@ -416,7 +456,7 @@ async fn test_read_document_with_specific_pages() {
     assert!(result.is_error.is_some() && !result.is_error.unwrap());
     
     // Check that the content contains page-specific information
-    let content = result.content[0].as_text().unwrap().text.clone().to_lowercase();
+    let content = result.content.as_ref().unwrap()[0].as_text().unwrap().text.clone().to_lowercase();
     assert!(content.contains("requested_pages") || content.contains("page"));
     assert!(content.contains("this is a test table"));
 
@@ -430,10 +470,13 @@ async fn test_read_document_with_page_range() {
     let file_path = Path::new("tests").join("test.xlsx");
     let file_path = file_path.to_str().unwrap().to_string();
     
-    // Start the MCP server in a separate process
+    // Build binary once if not already built
+    ensure_binary_built();
+    
+    // Start the MCP server using pre-built binary
     let service = ()
         .serve(TokioChildProcess::new(
-            Command::new("cargo").arg("run"),
+            Command::new("./target/release/office_reader_mcp"),
         ).unwrap())
         .await.unwrap();
     
@@ -463,7 +506,7 @@ async fn test_read_document_with_page_range() {
     assert!(result.is_error.is_some() && !result.is_error.unwrap());
     
     // Check that the content contains range information
-    let content = result.content[0].as_text().unwrap().text.clone().to_lowercase();
+    let content = result.content.as_ref().unwrap()[0].as_text().unwrap().text.clone().to_lowercase();
     assert!(content.contains("requested_pages") || content.contains("page"));
 
     // Kill the server process
@@ -476,10 +519,13 @@ async fn test_read_document_with_all_pages() {
     let file_path = Path::new("tests").join("test.xlsx");
     let file_path = file_path.to_str().unwrap().to_string();
     
-    // Start the MCP server in a separate process
+    // Build binary once if not already built
+    ensure_binary_built();
+    
+    // Start the MCP server using pre-built binary
     let service = ()
         .serve(TokioChildProcess::new(
-            Command::new("cargo").arg("run"),
+            Command::new("./target/release/office_reader_mcp"),
         ).unwrap())
         .await.unwrap();
     
@@ -500,7 +546,7 @@ async fn test_read_document_with_all_pages() {
     assert!(result.is_error.is_some() && !result.is_error.unwrap());
     
     // Check that the content contains all pages information
-    let content = result.content[0].as_text().unwrap().text.clone().to_lowercase();
+    let content = result.content.as_ref().unwrap()[0].as_text().unwrap().text.clone().to_lowercase();
     assert!(content.contains("requested pages"));
     assert!(content.contains("this is a test table"));
 
@@ -514,10 +560,13 @@ async fn test_read_document_with_invalid_page_range() {
     let file_path = Path::new("tests").join("test.xlsx");
     let file_path = file_path.to_str().unwrap().to_string();
     
-    // Start the MCP server in a separate process
+    // Build binary once if not already built
+    ensure_binary_built();
+    
+    // Start the MCP server using pre-built binary
     let service = ()
         .serve(TokioChildProcess::new(
-            Command::new("cargo").arg("run"),
+            Command::new("./target/release/office_reader_mcp"),
         ).unwrap())
         .await.unwrap();
     
@@ -537,7 +586,7 @@ async fn test_read_document_with_invalid_page_range() {
     // The tool call should succeed but return an error about invalid pages
     assert!(result.is_error.is_some() && !result.is_error.unwrap());
     
-    let content = result.content[0].as_text().unwrap().text.clone().to_lowercase();
+    let content = result.content.as_ref().unwrap()[0].as_text().unwrap().text.clone().to_lowercase();
     assert!(content.contains("error") || content.contains("exceeds") || content.contains("invalid"));
 
     // Kill the server process
@@ -550,10 +599,13 @@ async fn test_read_document_with_multiple_page_selection() {
     let file_path = Path::new("tests").join("test.xlsx");
     let file_path = file_path.to_str().unwrap().to_string();
     
-    // Start the MCP server in a separate process
+    // Build binary once if not already built
+    ensure_binary_built();
+    
+    // Start the MCP server using pre-built binary
     let service = ()
         .serve(TokioChildProcess::new(
-            Command::new("cargo").arg("run"),
+            Command::new("./target/release/office_reader_mcp"),
         ).unwrap())
         .await.unwrap();
     
@@ -574,7 +626,7 @@ async fn test_read_document_with_multiple_page_selection() {
     assert!(result.is_error.is_some() && !result.is_error.unwrap());
     
     // Check that the content contains page information
-    let content = result.content[0].as_text().unwrap().text.clone().to_lowercase();
+    let content = result.content.as_ref().unwrap()[0].as_text().unwrap().text.clone().to_lowercase();
     assert!(content.contains("requested_pages") || content.contains("page"));
 
     // Kill the server process
@@ -587,10 +639,13 @@ async fn test_page_workflow_integration() {
     let file_path = Path::new("tests").join("test.xlsx");
     let file_path = file_path.to_str().unwrap().to_string();
     
-    // Start the MCP server in a separate process
+    // Build binary once if not already built
+    ensure_binary_built();
+    
+    // Start the MCP server using pre-built binary
     let service = ()
         .serve(TokioChildProcess::new(
-            Command::new("cargo").arg("run"),
+            Command::new("./target/release/office_reader_mcp"),
         ).unwrap())
         .await.unwrap();
     
@@ -630,9 +685,9 @@ async fn test_page_workflow_integration() {
     assert!(stream_result.is_error.is_some() && !stream_result.is_error.unwrap());
 
     // Verify all three approaches return content about the same document
-    let page_info_content = page_info_result.content[0].as_text().unwrap().text.clone().to_lowercase();
-    let read_content = read_result.content[0].as_text().unwrap().text.clone().to_lowercase();
-    let stream_content = stream_result.content[0].as_text().unwrap().text.clone().to_lowercase();
+    let page_info_content = page_info_result.content.as_ref().unwrap()[0].as_text().unwrap().text.clone().to_lowercase();
+    let read_content = read_result.content.as_ref().unwrap()[0].as_text().unwrap().text.clone().to_lowercase();
+    let stream_content = stream_result.content.as_ref().unwrap()[0].as_text().unwrap().text.clone().to_lowercase();
 
     // All should reference the same file
     assert!(page_info_content.contains(&file_path.to_lowercase()) || page_info_content.contains("test.xlsx"));
@@ -649,10 +704,13 @@ async fn test_read_document_with_integer_page() {
     let file_path = Path::new("tests").join("test.xlsx");
     let file_path = file_path.to_str().unwrap().to_string();
     
-    // Start the MCP server in a separate process
+    // Build binary once if not already built
+    ensure_binary_built();
+    
+    // Start the MCP server using pre-built binary
     let service = ()
         .serve(TokioChildProcess::new(
-            Command::new("cargo").arg("run"),
+            Command::new("./target/release/office_reader_mcp"),
         ).unwrap())
         .await.unwrap();
     
@@ -673,7 +731,7 @@ async fn test_read_document_with_integer_page() {
     assert!(result.is_error.is_some() && !result.is_error.unwrap());
     
     // Check that the content contains page-specific information
-    let content = result.content[0].as_text().unwrap().text.clone().to_lowercase();
+    let content = result.content.as_ref().unwrap()[0].as_text().unwrap().text.clone().to_lowercase();
     assert!(content.contains("requested pages") || content.contains("page"));
     assert!(content.contains("this is a test table"));
 
@@ -686,9 +744,11 @@ async fn test_read_document_with_integer_page() {
 #[tokio::test]
 async fn test_powerpoint_functionality() {
     // Test PowerPoint-specific functionality
+    ensure_binary_built();
+    
     let service = ()
         .serve(TokioChildProcess::new(
-            Command::new("cargo").arg("run"),
+            Command::new("./target/release/office_reader_mcp"),
         ).unwrap())
         .await.unwrap();
     
@@ -711,7 +771,7 @@ async fn test_powerpoint_functionality() {
     }).await.unwrap();
     
     assert!(result.is_error.is_some() && !result.is_error.unwrap());
-    let content = result.content[0].as_text().unwrap().text.clone().to_lowercase();
+    let content = result.content.as_ref().unwrap()[0].as_text().unwrap().text.clone().to_lowercase();
     assert!(content.contains("file not found"));
 
     service.cancel().await.unwrap();
@@ -720,9 +780,11 @@ async fn test_powerpoint_functionality() {
 #[tokio::test]
 async fn test_error_handling_robustness() {
     // Test various error conditions to ensure robust error handling
+    ensure_binary_built();
+    
     let service = ()
         .serve(TokioChildProcess::new(
-            Command::new("cargo").arg("run"),
+            Command::new("./target/release/office_reader_mcp"),
         ).unwrap())
         .await.unwrap();
     
@@ -755,9 +817,11 @@ async fn test_error_handling_robustness() {
 #[tokio::test]
 async fn test_concurrent_requests() {
     // Test handling multiple concurrent requests
+    ensure_binary_built();
+    
     let service = ()
         .serve(TokioChildProcess::new(
-            Command::new("cargo").arg("run"),
+            Command::new("./target/release/office_reader_mcp"),
         ).unwrap())
         .await.unwrap();
     
@@ -800,9 +864,11 @@ async fn test_concurrent_requests() {
 #[tokio::test]
 async fn test_large_document_handling() {
     // Test handling of larger documents through streaming
+    ensure_binary_built();
+    
     let service = ()
         .serve(TokioChildProcess::new(
-            Command::new("cargo").arg("run"),
+            Command::new("./target/release/office_reader_mcp"),
         ).unwrap())
         .await.unwrap();
     
@@ -822,7 +888,7 @@ async fn test_large_document_handling() {
     
     assert!(result.is_error.is_some() && !result.is_error.unwrap());
     
-    let content = result.content[0].as_text().unwrap().text.clone();
+    let content = result.content.as_ref().unwrap()[0].as_text().unwrap().text.clone();
     assert!(content.contains("current_page") || content.contains("chunk"));
 
     service.cancel().await.unwrap();
@@ -831,9 +897,11 @@ async fn test_large_document_handling() {
 #[tokio::test]
 async fn test_tool_discovery_and_metadata() {
     // Test that all expected tools are available with proper metadata
+    ensure_binary_built();
+    
     let service = ()
         .serve(TokioChildProcess::new(
-            Command::new("cargo").arg("run"),
+            Command::new("./target/release/office_reader_mcp"),
         ).unwrap())
         .await.unwrap();
     
@@ -856,7 +924,7 @@ async fn test_tool_discovery_and_metadata() {
         assert!(tool.is_some(), "Tool {} should be available", expected_tool);
         
         let tool = tool.unwrap();
-        assert!(!tool.description.is_empty(), "Tool {} should have a description", expected_tool);
+        assert!(tool.description.as_ref().map_or(false, |d| !d.is_empty()), "Tool {} should have a description", expected_tool);
         // Check that the tool has some input schema defined
         assert!(!tool.input_schema.is_empty(), "Tool {} should have input schema", expected_tool);
     }

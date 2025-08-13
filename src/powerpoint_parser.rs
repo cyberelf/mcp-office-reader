@@ -337,7 +337,7 @@ fn extract_text_from_slide_xml(xml_content: &str) -> Result<String> {
             }
             Ok(Event::Text(e)) => {
                 if in_text_element {
-                    let text = e.unescape().unwrap_or_default();
+                    let text = std::str::from_utf8(&e).unwrap_or_default();
                     text_content.push_str(&text);
                     text_content.push(' ');
                 }
@@ -539,7 +539,7 @@ fn parse_slide_xml(xml_content: &str, _archive: &mut ZipArchive<File>) -> Result
             }
             Ok(Event::Text(e)) => {
                 if in_text_element {
-                    let text = e.unescape().unwrap_or_default();
+                    let text = std::str::from_utf8(&e).unwrap_or_default();
                     current_text.push_str(&text);
                 }
             }
