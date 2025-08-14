@@ -46,6 +46,9 @@ futures = "0.3.30"  # For streaming support
 tokio-stream = "0.1.15"  # For async streaming
 lazy_static = "1.4.0"  # For global PDF cache
 log = "0.4.22"  # For logging
+env_logger = "0.11.8"  # For logging initialization
+fern = "0.7.1"  # For advanced logging configuration with file output
+chrono = { version = "0.4.38", features = ["serde"] }  # For timestamps in logs
 base64 = "0.22.1"  # For embedded image handling
 regex = "1.11.1"  # For text processing
 

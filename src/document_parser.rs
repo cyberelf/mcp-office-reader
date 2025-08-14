@@ -335,24 +335,52 @@ pub fn process_document_with_pages(
     resolved_file_path: &str,
     pages: Option<String>,
 ) -> DocumentProcessingResult {
+    log::debug!("🔍 process_document_with_pages: ENTRY - file_path={}, pages={:?}", 
+               resolved_file_path, pages);
+    
     let file_path_string = resolved_file_path.to_string();
     let pages = pages.unwrap_or_else(|| "all".to_string());
     
+    log::debug!("🔍 process_document_with_pages: Using pages parameter: '{}'", pages);
+    
     // Validate file and get its type
+    log::debug!("🔍 process_document_with_pages: Validating file path: {}", resolved_file_path);
     let file_type = match validate_file_path(resolved_file_path) {
-        Ok(ext) => ext,
-        Err(e) => return DocumentProcessingResult::error(file_path_string, e),
+        Ok(ext) => {
+            log::debug!("🔍 process_document_with_pages: File type detected: '{}'", ext);
+            ext
+        },
+        Err(e) => {
+            log::error!("❌ process_document_with_pages: File validation failed: {}", e);
+            return DocumentProcessingResult::error(file_path_string, e);
+        }
     };
     
+    log::debug!("🔍 process_document_with_pages: Processing file type: '{}'", file_type);
     match file_type.as_str() {
-        "xlsx" | "xls" => process_excel_with_pages(resolved_file_path, &pages),
-        "pdf" => process_pdf_with_pages(resolved_file_path, &pages),
-        "docx" | "doc" => process_docx_with_pages(resolved_file_path, &pages),
-        "pptx" | "ppt" => process_powerpoint_with_pages_wrapper(resolved_file_path, &pages),
-        _ => DocumentProcessingResult::error(
-            file_path_string,
-            format!("Unsupported file type: {}", file_type),
-        ),
+        "xlsx" | "xls" => {
+            log::debug!("🔍 process_document_with_pages: Calling process_excel_with_pages");
+            process_excel_with_pages(resolved_file_path, &pages)
+        },
+        "pdf" => {
+            log::debug!("🔍 process_document_with_pages: Calling process_pdf_with_pages");
+            process_pdf_with_pages(resolved_file_path, &pages)
+        },
+        "docx" | "doc" => {
+            log::debug!("🔍 process_document_with_pages: Calling process_docx_with_pages");
+            process_docx_with_pages(resolved_file_path, &pages)
+        },
+        "pptx" | "ppt" => {
+            log::debug!("🔍 process_document_with_pages: Calling process_powerpoint_with_pages_wrapper");
+            process_powerpoint_with_pages_wrapper(resolved_file_path, &pages)
+        },
+        _ => {
+            log::error!("❌ process_document_with_pages: Unsupported file type: {}", file_type);
+            DocumentProcessingResult::error(
+                file_path_string,
+                format!("Unsupported file type: {}", file_type),
+            )
+        }
     }
 }
 
@@ -410,40 +438,97 @@ fn process_excel_with_pages(file_path: &str, pages: &str) -> DocumentProcessingR
 
 /// Process PDF file with specific pages
 fn process_pdf_with_pages(file_path: &str, pages: &str) -> DocumentProcessingResult {
+    log::debug!("🔍 process_pdf_with_pages: ENTRY - file_path={}, pages={}", file_path, pages);
     let file_path_string = file_path.to_string();
     
     // Use the cache to get PDF content and page count
+    log::debug!("🔍 process_pdf_with_pages: Getting or caching PDF content");
     let pdf_cache = match get_or_cache_pdf_content(file_path) {
-        Ok(cache) => cache,
-        Err(e) => return DocumentProcessingResult::error(
-            file_path_string,
-            format!("Failed to get PDF content: {}", e),
-        ),
+        Ok(cache) => {
+            log::debug!("🔍 process_pdf_with_pages: PDF cache retrieved successfully");
+            cache
+        },
+        Err(e) => {
+            log::error!("❌ process_pdf_with_pages: Failed to get PDF content: {}", e);
+            return DocumentProcessingResult::error(
+                file_path_string,
+                format!("Failed to get PDF content: {}", e),
+            );
+        }
     };
+    
     let total_pages = match pdf_cache.total_pages {
-        Some(count) => count,
-        None => return DocumentProcessingResult::error(
-            file_path_string,
-            "Failed to determine PDF page count".to_string(),
-        ),
+        Some(count) => {
+            log::debug!("🔍 process_pdf_with_pages: Total pages determined: {}", count);
+            count
+        },
+        None => {
+            log::error!("❌ process_pdf_with_pages: Failed to determine PDF page count");
+            return DocumentProcessingResult::error(
+                file_path_string,
+                "Failed to determine PDF page count".to_string(),
+            );
+        }
     };
+    
     // Parse the pages parameter
+    log::debug!("🔍 process_pdf_with_pages: Parsing pages parameter: '{}' with total_pages={}", pages, total_pages);
     let requested_page_indices = match parse_pages_parameter(pages, total_pages) {
-        Ok(indices) => indices,
-        Err(e) => return DocumentProcessingResult::error(
-            file_path_string,
-            format!("Invalid pages parameter: {}", e),
-        ),
+        Ok(indices) => {
+            log::debug!("🔍 process_pdf_with_pages: Requested page indices: {:?}", indices);
+            indices
+        },
+        Err(e) => {
+            log::error!("❌ process_pdf_with_pages: Invalid pages parameter: {}", e);
+            return DocumentProcessingResult::error(
+                file_path_string,
+                format!("Invalid pages parameter: {}", e),
+            );
+        }
     };
+    
     // Extract text from specific pages using the new page-specific extraction
-    let extracted_text = match FastPdfExtractor::extract_pages_text(file_path, &requested_page_indices) {
-        Ok(text) => text,
-        Err(e) => return DocumentProcessingResult::error(
-            file_path_string,
-            format!("Failed to extract PDF pages: {}", e),
-        ),
+    log::debug!("🔍 process_pdf_with_pages: About to call FastPdfExtractor::extract_pages_text");
+    let extracted_text = match std::panic::catch_unwind(|| {
+        FastPdfExtractor::extract_pages_text(file_path, &requested_page_indices)
+    }) {
+        Ok(Ok(text)) => {
+            log::debug!("🔍 process_pdf_with_pages: PDF text extraction completed successfully, length={}", text.len());
+            text
+        },
+        Ok(Err(e)) => {
+            log::error!("❌ process_pdf_with_pages: PDF text extraction failed: {}", e);
+            return DocumentProcessingResult::error(
+                file_path_string,
+                format!("Failed to extract PDF pages: {}", e),
+            );
+        },
+        Err(panic_info) => {
+            let panic_msg = if let Some(s) = panic_info.downcast_ref::<String>() {
+                s.clone()
+            } else if let Some(s) = panic_info.downcast_ref::<&str>() {
+                s.to_string()
+            } else {
+                "Unknown panic in PDF extraction".to_string()
+            };
+            log::error!("❌ process_pdf_with_pages: PANIC in FastPdfExtractor::extract_pages_text: {}", panic_msg);
+            return DocumentProcessingResult::error(
+                file_path_string,
+                format!("PDF extraction panic: {}", panic_msg),
+            );
+        }
     };
-    let mut markdown = format!("# {}\n\n", Path::new(file_path).file_name().unwrap().to_string_lossy());
+    
+    log::debug!("🔍 process_pdf_with_pages: Building markdown output");
+    let file_name = match Path::new(file_path).file_name() {
+        Some(name) => name.to_string_lossy().to_string(),
+        None => {
+            log::warn!("⚠️ process_pdf_with_pages: Could not get file name, using path");
+            file_path.to_string()
+        }
+    };
+    
+    let mut markdown = format!("# {}\n\n", file_name);
     // Add the extracted content
     if requested_page_indices.len() == total_pages {
         // All pages requested
@@ -453,6 +538,8 @@ fn process_pdf_with_pages(file_path: &str, pages: &str) -> DocumentProcessingRes
         markdown.push_str(&format!("## Content (Pages: {})\n\n", pages));
     }
     markdown.push_str(&extracted_text);
+    
+    log::debug!("🔍 process_pdf_with_pages: SUCCESS - returning result");
     DocumentProcessingResult::success(
         markdown,
         Some(total_pages),

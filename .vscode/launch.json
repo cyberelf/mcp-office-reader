@@ -1,0 +1,305 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in library 'office_reader_mcp'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--lib",
+                    "--package=office_reader_mcp"
+                ],
+                "filter": {
+                    "name": "office_reader_mcp",
+                    "kind": "lib"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'office_reader_mcp'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=office_reader_mcp",
+                    "--package=office_reader_mcp"
+                ],
+                "filter": {
+                    "name": "office_reader_mcp",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'office_reader_mcp'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=office_reader_mcp",
+                    "--package=office_reader_mcp"
+                ],
+                "filter": {
+                    "name": "office_reader_mcp",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug example 'performance_comparison'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--example=performance_comparison",
+                    "--package=office_reader_mcp"
+                ],
+                "filter": {
+                    "name": "performance_comparison",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in example 'performance_comparison'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--example=performance_comparison",
+                    "--package=office_reader_mcp"
+                ],
+                "filter": {
+                    "name": "performance_comparison",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug example 'rust_vs_python_benchmark'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--example=rust_vs_python_benchmark",
+                    "--package=office_reader_mcp"
+                ],
+                "filter": {
+                    "name": "rust_vs_python_benchmark",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in example 'rust_vs_python_benchmark'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--example=rust_vs_python_benchmark",
+                    "--package=office_reader_mcp"
+                ],
+                "filter": {
+                    "name": "rust_vs_python_benchmark",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug example 'test_path_resolution'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--example=test_path_resolution",
+                    "--package=office_reader_mcp"
+                ],
+                "filter": {
+                    "name": "test_path_resolution",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in example 'test_path_resolution'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--example=test_path_resolution",
+                    "--package=office_reader_mcp"
+                ],
+                "filter": {
+                    "name": "test_path_resolution",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug example 'test_powerpoint'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--example=test_powerpoint",
+                    "--package=office_reader_mcp"
+                ],
+                "filter": {
+                    "name": "test_powerpoint",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in example 'test_powerpoint'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--example=test_powerpoint",
+                    "--package=office_reader_mcp"
+                ],
+                "filter": {
+                    "name": "test_powerpoint",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug example 'test_powerpoint_snapshot'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--example=test_powerpoint_snapshot",
+                    "--package=office_reader_mcp"
+                ],
+                "filter": {
+                    "name": "test_powerpoint_snapshot",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in example 'test_powerpoint_snapshot'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--example=test_powerpoint_snapshot",
+                    "--package=office_reader_mcp"
+                ],
+                "filter": {
+                    "name": "test_powerpoint_snapshot",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug example 'test_streaming'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--example=test_streaming",
+                    "--package=office_reader_mcp"
+                ],
+                "filter": {
+                    "name": "test_streaming",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in example 'test_streaming'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--example=test_streaming",
+                    "--package=office_reader_mcp"
+                ],
+                "filter": {
+                    "name": "test_streaming",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug integration test 'e2e_test'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--test=e2e_test",
+                    "--package=office_reader_mcp"
+                ],
+                "filter": {
+                    "name": "e2e_test",
+                    "kind": "test"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}

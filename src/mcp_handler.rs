@@ -230,33 +230,81 @@ impl OfficeReader {
         &self,
         params: Parameters<ReadOfficeDocumentByPageInput>,
     ) -> Result<CallToolResult, McpError> {
+        log::debug!("🔍 read_office_document: ENTRY POINT - file_path={}, pages={:?}", 
+                    params.0.file_path, params.0.pages);
+        
         // Resolve file path at entry point
-        let resolved_path = resolve_file_path_string(&params.0.file_path)
-            .map_err(|e| ErrorData::new(ErrorCode::INVALID_PARAMS, e, None))?;
+        log::debug!("🔍 read_office_document: Resolving file path: {}", params.0.file_path);
+        let resolved_path = match resolve_file_path_string(&params.0.file_path) {
+            Ok(path) => {
+                log::debug!("🔍 read_office_document: File path resolved successfully: {} -> {}", 
+                           params.0.file_path, path);
+                path
+            },
+            Err(e) => {
+                log::error!("❌ read_office_document: File path resolution failed: {}", e);
+                return Err(ErrorData::new(ErrorCode::INVALID_PARAMS, e, None));
+            }
+        };
         
         // Convert the pages parameter to a string format that our parser expects
+        log::debug!("🔍 read_office_document: Processing pages parameter: {:?}", params.0.pages);
         let pages_str = match params.0.pages {
             Some(serde_json::Value::Number(n)) => {
                 // Handle integer input (e.g., 1, 2, 3)
                 if let Some(page_num) = n.as_u64() {
-                    Some(page_num.to_string())
+                    let page_str = page_num.to_string();
+                    log::debug!("🔍 read_office_document: Pages parameter as number: {}", page_str);
+                    Some(page_str)
                 } else {
+                    log::debug!("🔍 read_office_document: Invalid number for pages, defaulting to '1'");
                     Some("1".to_string()) // Default to page 1 if invalid number
                 }
             },
             Some(serde_json::Value::String(s)) => {
                 // Handle string input (e.g., "1,3,5-7", "all")
+                log::debug!("🔍 read_office_document: Pages parameter as string: '{}'", s);
                 Some(s)
             },
             Some(_) => {
                 // Handle other JSON types by converting to string
+                log::debug!("🔍 read_office_document: Pages parameter other type, defaulting to 'all'");
                 Some("all".to_string())
             },
-            None => None, // No pages specified, will default to "all"
+            None => {
+                log::debug!("🔍 read_office_document: No pages parameter specified, will default to 'all'");
+                None // No pages specified, will default to "all"
+            }
         };
         
-        let result = process_document_with_pages(&resolved_path, pages_str);
+        log::debug!("🔍 read_office_document: About to call process_document_with_pages with resolved_path='{}', pages_str={:?}", 
+                   resolved_path, pages_str);
+        
+        let result = match std::panic::catch_unwind(|| {
+            process_document_with_pages(&resolved_path, pages_str)
+        }) {
+            Ok(result) => {
+                log::debug!("🔍 read_office_document: process_document_with_pages completed successfully");
+                result
+            },
+            Err(panic_info) => {
+                let panic_msg = if let Some(s) = panic_info.downcast_ref::<String>() {
+                    s.clone()
+                } else if let Some(s) = panic_info.downcast_ref::<&str>() {
+                    s.to_string()
+                } else {
+                    "Unknown panic occurred".to_string()
+                };
+                log::error!("❌ read_office_document: PANIC caught in process_document_with_pages: {}", panic_msg);
+                return Err(ErrorData::new(ErrorCode::INTERNAL_ERROR, 
+                          format!("Internal error during document processing: {}", panic_msg), None));
+            }
+        };
+        
+        log::debug!("🔍 read_office_document: Converting result to PageBasedDocumentContent");
         let page_content: PageBasedDocumentContent = result.into();
+        
+        log::debug!("🔍 read_office_document: SUCCESS - returning content");
         Ok(CallToolResult::success(page_content.into_contents()))
     }
 

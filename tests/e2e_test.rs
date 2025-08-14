@@ -8,10 +8,20 @@ use rmcp::{model::CallToolRequestParam, service::ServiceExt, transport::TokioChi
 
 static INIT: Once = Once::new();
 
-fn ensure_binary_built() {
+fn ensure_binary_built() -> String {
+    #[cfg(feature = "pdfium")]
+    let build_args = ["--features", "pdfium"];
+    #[cfg(feature = "mupdf_backend")]
+    let build_args = ["--features", "mupdf_backend"];
+    #[cfg(feature = "poppler")]
+    let build_args = ["--features", "poppler"];
+    #[cfg(not(any(feature = "pdfium", feature = "mupdf_backend", feature = "poppler")))]
+    let build_args: [&str; 0] = [];
+    
     INIT.call_once(|| {
         let output = std::process::Command::new("cargo")
             .args(["build", "--release", "--bin", "office_reader_mcp"])
+            .args(build_args)
             .output()
             .expect("Failed to build binary");
         
@@ -19,6 +29,7 @@ fn ensure_binary_built() {
             panic!("Failed to build binary: {}", String::from_utf8_lossy(&output.stderr));
         }
     });
+    "./target/release/office_reader_mcp".to_string()
 }
 
 #[tokio::test]
@@ -29,13 +40,11 @@ async fn test_process_text_document() {
     let file_path = temp_file.path().to_str().unwrap().to_string();
     
     // Build binary once if not already built
-    ensure_binary_built();
+    let binary_path = ensure_binary_built();
     
     // Start the MCP server using pre-built binary
     let service = ()
-        .serve(TokioChildProcess::new(
-            Command::new("./target/release/office_reader_mcp"),
-        ).unwrap())
+        .serve(TokioChildProcess::new(Command::new(binary_path)).unwrap())
         .await.unwrap();
     
     // Give the server some time to start
@@ -73,13 +82,11 @@ async fn test_process_excel_document() {
     let file_path = file_path.to_str().unwrap().to_string();
     
     // Build binary once if not already built
-    ensure_binary_built();
+    let binary_path = ensure_binary_built();
     
     // Start the MCP server using pre-built binary
     let service = ()
-        .serve(TokioChildProcess::new(
-            Command::new("./target/release/office_reader_mcp"),
-        ).unwrap())
+        .serve(TokioChildProcess::new(Command::new(binary_path)).unwrap())
         .await.unwrap();
     
     // Give the server some time to start
@@ -140,13 +147,11 @@ async fn test_stream_excel_document() {
     let file_path = file_path.to_str().unwrap().to_string();
     
     // Build binary once if not already built
-    ensure_binary_built();
+    let binary_path = ensure_binary_built();
     
     // Start the MCP server using pre-built binary
     let service = ()
-        .serve(TokioChildProcess::new(
-            Command::new("./target/release/office_reader_mcp"),
-        ).unwrap())
+        .serve(TokioChildProcess::new(Command::new(binary_path)).unwrap())
         .await.unwrap();
     
     // Give the server some time to start
@@ -199,13 +204,11 @@ async fn test_stream_pdf_document_with_small_chunk() {
     let file_path = temp_file.path().to_str().unwrap().to_string();
     
     // Build binary once if not already built
-    ensure_binary_built();
+    let binary_path = ensure_binary_built();
     
     // Start the MCP server using pre-built binary
     let service = ()
-        .serve(TokioChildProcess::new(
-            Command::new("./target/release/office_reader_mcp"),
-        ).unwrap())
+        .serve(TokioChildProcess::new(Command::new(binary_path)).unwrap())
         .await.unwrap();
     
     // Give the server some time to start
@@ -238,13 +241,11 @@ async fn test_stream_pdf_document_with_small_chunk() {
 #[tokio::test]
 async fn test_stream_nonexistent_file() {
     // Build binary once if not already built
-    ensure_binary_built();
+    let binary_path = ensure_binary_built();
     
     // Start the MCP server using pre-built binary
     let service = ()
-        .serve(TokioChildProcess::new(
-            Command::new("./target/release/office_reader_mcp"),
-        ).unwrap())
+        .serve(TokioChildProcess::new(Command::new(binary_path)).unwrap())
         .await.unwrap();
     
     // Give the server some time to start
@@ -275,13 +276,11 @@ async fn test_stream_unsupported_file_type() {
     let file_path = temp_file.path().to_str().unwrap().to_string();
     
     // Build binary once if not already built
-    ensure_binary_built();
+    let binary_path = ensure_binary_built();
     
     // Start the MCP server using pre-built binary
     let service = ()
-        .serve(TokioChildProcess::new(
-            Command::new("./target/release/office_reader_mcp"),
-        ).unwrap())
+        .serve(TokioChildProcess::new(Command::new(binary_path)).unwrap())
         .await.unwrap();
     
     // Give the server some time to start
@@ -311,13 +310,11 @@ async fn test_stream_with_default_chunk_size() {
     let file_path = file_path.to_str().unwrap().to_string();
     
     // Build binary once if not already built
-    ensure_binary_built();
+    let binary_path = ensure_binary_built();
     
     // Start the MCP server using pre-built binary
     let service = ()
-        .serve(TokioChildProcess::new(
-            Command::new("./target/release/office_reader_mcp"),
-        ).unwrap())
+        .serve(TokioChildProcess::new(Command::new(binary_path)).unwrap())
         .await.unwrap();
     
     // Give the server some time to start
@@ -351,13 +348,11 @@ async fn test_get_document_page_info() {
     let file_path = file_path.to_str().unwrap().to_string();
     
     // Build binary once if not already built
-    ensure_binary_built();
+    let binary_path = ensure_binary_built();
     
     // Start the MCP server using pre-built binary
     let service = ()
-        .serve(TokioChildProcess::new(
-            Command::new("./target/release/office_reader_mcp"),
-        ).unwrap())
+        .serve(TokioChildProcess::new(Command::new(binary_path)).unwrap())
         .await.unwrap();
     
     // Give the server some time to start
@@ -392,13 +387,11 @@ async fn test_get_document_page_info() {
 #[tokio::test]
 async fn test_get_document_page_info_nonexistent_file() {
     // Build binary once if not already built
-    ensure_binary_built();
+    let binary_path = ensure_binary_built();
     
     // Start the MCP server using pre-built binary
     let service = ()
-        .serve(TokioChildProcess::new(
-            Command::new("./target/release/office_reader_mcp"),
-        ).unwrap())
+        .serve(TokioChildProcess::new(Command::new(binary_path)).unwrap())
         .await.unwrap();
     
     // Give the server some time to start
@@ -430,13 +423,11 @@ async fn test_read_document_with_specific_pages() {
     let file_path = file_path.to_str().unwrap().to_string();
     
     // Build binary once if not already built
-    ensure_binary_built();
+    let binary_path = ensure_binary_built();
     
     // Start the MCP server using pre-built binary
     let service = ()
-        .serve(TokioChildProcess::new(
-            Command::new("./target/release/office_reader_mcp"),
-        ).unwrap())
+        .serve(TokioChildProcess::new(Command::new(binary_path)).unwrap())
         .await.unwrap();
     
     // Give the server some time to start
@@ -471,13 +462,11 @@ async fn test_read_document_with_page_range() {
     let file_path = file_path.to_str().unwrap().to_string();
     
     // Build binary once if not already built
-    ensure_binary_built();
+    let binary_path = ensure_binary_built();
     
     // Start the MCP server using pre-built binary
     let service = ()
-        .serve(TokioChildProcess::new(
-            Command::new("./target/release/office_reader_mcp"),
-        ).unwrap())
+        .serve(TokioChildProcess::new(Command::new(binary_path)).unwrap())
         .await.unwrap();
     
     // Give the server some time to start
@@ -520,13 +509,11 @@ async fn test_read_document_with_all_pages() {
     let file_path = file_path.to_str().unwrap().to_string();
     
     // Build binary once if not already built
-    ensure_binary_built();
+    let binary_path = ensure_binary_built();
     
     // Start the MCP server using pre-built binary
     let service = ()
-        .serve(TokioChildProcess::new(
-            Command::new("./target/release/office_reader_mcp"),
-        ).unwrap())
+        .serve(TokioChildProcess::new(Command::new(binary_path)).unwrap())
         .await.unwrap();
     
     // Give the server some time to start
@@ -561,13 +548,11 @@ async fn test_read_document_with_invalid_page_range() {
     let file_path = file_path.to_str().unwrap().to_string();
     
     // Build binary once if not already built
-    ensure_binary_built();
+    let binary_path = ensure_binary_built();
     
     // Start the MCP server using pre-built binary
     let service = ()
-        .serve(TokioChildProcess::new(
-            Command::new("./target/release/office_reader_mcp"),
-        ).unwrap())
+        .serve(TokioChildProcess::new(Command::new(binary_path)).unwrap())
         .await.unwrap();
     
     // Give the server some time to start
@@ -600,13 +585,11 @@ async fn test_read_document_with_multiple_page_selection() {
     let file_path = file_path.to_str().unwrap().to_string();
     
     // Build binary once if not already built
-    ensure_binary_built();
+    let binary_path = ensure_binary_built();
     
     // Start the MCP server using pre-built binary
     let service = ()
-        .serve(TokioChildProcess::new(
-            Command::new("./target/release/office_reader_mcp"),
-        ).unwrap())
+        .serve(TokioChildProcess::new(Command::new(binary_path)).unwrap())
         .await.unwrap();
     
     // Give the server some time to start
@@ -640,13 +623,11 @@ async fn test_page_workflow_integration() {
     let file_path = file_path.to_str().unwrap().to_string();
     
     // Build binary once if not already built
-    ensure_binary_built();
+    let binary_path = ensure_binary_built();
     
     // Start the MCP server using pre-built binary
     let service = ()
-        .serve(TokioChildProcess::new(
-            Command::new("./target/release/office_reader_mcp"),
-        ).unwrap())
+        .serve(TokioChildProcess::new(Command::new(binary_path)).unwrap())
         .await.unwrap();
     
     // Give the server some time to start
@@ -705,13 +686,11 @@ async fn test_read_document_with_integer_page() {
     let file_path = file_path.to_str().unwrap().to_string();
     
     // Build binary once if not already built
-    ensure_binary_built();
+    let binary_path = ensure_binary_built();
     
     // Start the MCP server using pre-built binary
     let service = ()
-        .serve(TokioChildProcess::new(
-            Command::new("./target/release/office_reader_mcp"),
-        ).unwrap())
+        .serve(TokioChildProcess::new(Command::new(binary_path)).unwrap())
         .await.unwrap();
     
     // Give the server some time to start
@@ -744,12 +723,10 @@ async fn test_read_document_with_integer_page() {
 #[tokio::test]
 async fn test_powerpoint_functionality() {
     // Test PowerPoint-specific functionality
-    ensure_binary_built();
+    let binary_path = ensure_binary_built();
     
     let service = ()
-        .serve(TokioChildProcess::new(
-            Command::new("./target/release/office_reader_mcp"),
-        ).unwrap())
+        .serve(TokioChildProcess::new(Command::new(binary_path)).unwrap())
         .await.unwrap();
     
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -780,12 +757,10 @@ async fn test_powerpoint_functionality() {
 #[tokio::test]
 async fn test_error_handling_robustness() {
     // Test various error conditions to ensure robust error handling
-    ensure_binary_built();
+    let binary_path = ensure_binary_built();
     
     let service = ()
-        .serve(TokioChildProcess::new(
-            Command::new("./target/release/office_reader_mcp"),
-        ).unwrap())
+        .serve(TokioChildProcess::new(Command::new(binary_path)).unwrap())
         .await.unwrap();
     
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -817,12 +792,10 @@ async fn test_error_handling_robustness() {
 #[tokio::test]
 async fn test_concurrent_requests() {
     // Test handling multiple concurrent requests
-    ensure_binary_built();
+    let binary_path = ensure_binary_built();
     
     let service = ()
-        .serve(TokioChildProcess::new(
-            Command::new("./target/release/office_reader_mcp"),
-        ).unwrap())
+        .serve(TokioChildProcess::new(Command::new(binary_path)).unwrap())
         .await.unwrap();
     
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -864,12 +837,10 @@ async fn test_concurrent_requests() {
 #[tokio::test]
 async fn test_large_document_handling() {
     // Test handling of larger documents through streaming
-    ensure_binary_built();
+    let binary_path = ensure_binary_built();
     
     let service = ()
-        .serve(TokioChildProcess::new(
-            Command::new("./target/release/office_reader_mcp"),
-        ).unwrap())
+        .serve(TokioChildProcess::new(Command::new(binary_path)).unwrap())
         .await.unwrap();
     
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -897,12 +868,10 @@ async fn test_large_document_handling() {
 #[tokio::test]
 async fn test_tool_discovery_and_metadata() {
     // Test that all expected tools are available with proper metadata
-    ensure_binary_built();
+    let binary_path = ensure_binary_built();
     
     let service = ()
-        .serve(TokioChildProcess::new(
-            Command::new("./target/release/office_reader_mcp"),
-        ).unwrap())
+        .serve(TokioChildProcess::new(Command::new(binary_path)).unwrap())
         .await.unwrap();
     
     tokio::time::sleep(Duration::from_secs(2)).await;
